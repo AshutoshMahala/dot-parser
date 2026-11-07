@@ -48,6 +48,12 @@ statements after an error, too.
     Observer recovery is independent: ending an observer's delivery after a
     syntax error does not disable IR retention. Explicit observer stops/errors
     and operational failures still prevent publication.
+  - **Resumable construction from events.** `EventIR.Session` and
+    `PartialSession` share a grant across DOT, validation and IR construction,
+    with no hidden Document or measuring pass. They preserve observer forwarding,
+    independent recovery, limits and cancellation. This increment accepts UTF-8
+    and ASCII; native-encoding sessions and fixed event storage remain pending.
+    The existing one-shot/default paths remain separate.
   - **Reading the graph.** Node, subgraph and edge views; `findNode`,
     `hasEdge` and membership queries; attribute lookup and listing; value views
     that keep the original spelling and print the joined value with `{f}`; edge

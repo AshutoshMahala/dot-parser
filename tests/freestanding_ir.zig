@@ -516,3 +516,15 @@ export fn event_ir(source: [*]const u8, length: u32, memory: [*]u8, capacity: u3
     const graph = result.ir() orelse return 0;
     return @intCast(graph.nodes.len);
 }
+
+export fn resumable_event_ir(source: [*]const u8, length: u32, memory: [*]u8, capacity: u32) u32 {
+    const E = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } }).FromEvents(dot.Profile(.{ .policy = .{ .execution = .{ .metering = true } } }));
+    var buffer = std.heap.FixedBufferAllocator.init(memory[0..capacity]);
+    var session = E.PartialSession.init(buffer.allocator(), source[0..length], .{}) catch return 0;
+    defer session.deinit();
+    while (session.advance(7).outcome == null) {}
+    var result = session.takeResult() catch return 0;
+    defer result.deinit();
+    const graph = result.ir() orelse return 0;
+    return @intCast(graph._data.nodes.len);
+}

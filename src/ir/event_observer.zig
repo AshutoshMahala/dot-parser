@@ -6,6 +6,11 @@ pub fn Errors(comptime Observer: type) type {
 }
 
 pub fn Consumer(comptime Builder: type, comptime ObserverType: ?type) type {
+    return ConsumerWith(Builder, ObserverType, false);
+}
+
+/// Bounded composition pays forwarding with the existing parser dispatch.
+pub fn ConsumerWith(comptime Builder: type, comptime ObserverType: ?type, comptime bounded: bool) type {
     const Observer = ObserverType orelse return Builder;
     const begin = !@hasDecl(Observer, "wants_begin_statement") or Observer.wants_begin_statement;
     const observer_recovery = !@hasDecl(Observer, "recover_statements") or Observer.recover_statements;
@@ -49,7 +54,7 @@ pub fn Consumer(comptime Builder: type, comptime ObserverType: ?type) type {
             if ((!independent or !self.terminal) and (begin or event != .begin_statement)) {
                 // One additional bounded delivery. Callback bodies have the
                 // same caller-owned work contract as standalone DOT events.
-                self.builder.b.work.spend(1) catch |err| {
+                if (!bounded) self.builder.b.work.spend(1) catch |err| {
                     self.undelivered_begin = event == .begin_statement;
                     self.builder.failure = err;
                     return err;

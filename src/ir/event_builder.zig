@@ -129,9 +129,16 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             try self.spend(count);
             slice.* = try self.b.a.realloc(slice.*, count);
         }
-        fn resetStage(self: *Self) void {
-            if (partial) self.aborted.reset();
-            inline for (.{ "statements", "stage_scopes", "stage_attributes", "stage_links", "stage_ports", "replay" }) |field| @field(self, field).clearRetainingCapacity();
+        pub fn resetStage(self: *Self, comptime bounded: bool) void {
+            if (partial) {
+                if (bounded) {
+                    self.aborted.statements.items.len = 0;
+                    self.aborted.scopes.items.len = 0;
+                } else self.aborted.reset();
+            }
+            inline for (.{ "statements", "stage_scopes", "stage_attributes", "stage_links", "stage_ports", "replay" }) |field| {
+                if (bounded) @field(self, field).items.len = 0 else @field(self, field).clearRetainingCapacity();
+            }
             self.current = 0;
             self.scope_base = self.occurrence_count;
             self.reference_base = self.next_reference;
@@ -256,7 +263,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             }
             return .proceed;
         }
-        inline fn active(self: *Self) u32 {
+        pub inline fn active(self: *Self) u32 {
             return self.stage_scopes.items[self.current].active;
         }
         inline fn beginStatement(self: *Self, occurrence: u32) r.Error!u32 {
@@ -278,14 +285,14 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             if (statement.last_link != none) self.stage_links.items[statement.last_link].next = id else statement.first_link = id;
             statement.last_link = id;
         }
-        inline fn reference(self: *Self, identifier: Span, port: ?u32) r.Error!syntax.NodeReferenceView {
+        pub inline fn reference(self: *Self, identifier: Span, port: ?u32) r.Error!syntax.NodeReferenceView {
             if (port) |id| {
                 if (id < self.reference_base or id - self.reference_base >= self.stage_ports.items.len) return error.InvalidDocument;
                 return self.stage_ports.items[id - self.reference_base];
             }
             return .{ .identifier = identifier };
         }
-        fn endpoint(self: *Self, edge: e.Edge, comptime left: bool) r.Error!Endpoint {
+        pub fn endpoint(self: *Self, edge: e.Edge, comptime left: bool) r.Error!Endpoint {
             if (if (left) edge.left_scope else edge.right_scope) |scope| return .{ .scope = scope };
             return .{ .node = try self.reference(if (left) edge.left else edge.right, if (left) edge.left_port else edge.right_port) };
         }
@@ -327,15 +334,15 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                 error.InvalidIdentifier => self.semantic_failure = error.InvalidIdentifier,
                 else => return err,
             };
-            self.resetStage();
+            self.resetStage(false);
         }
-        inline fn checkReference(self: *Self, view: syntax.NodeReferenceView) v.Stop!void {
+        pub inline fn checkReference(self: *Self, view: syntax.NodeReferenceView) v.Stop!void {
             if (view.port) |port| {
                 const last = port.second orelse port.first;
                 try self.checker.restriction(self.checker.settings().restrictions.ports, .{ .start = port.first.start, .len = last.start + last.len - port.first.start }, .port);
             }
         }
-        inline fn checkOperator(self: *Self, op: syntax.EdgeOperator, span: Span) v.Stop!void {
+        pub inline fn checkOperator(self: *Self, op: syntax.EdgeOperator, span: Span) v.Stop!void {
             try self.checker.operator(self.header.kind, self.keyword, op, span);
             if (op == .directed and self.header.kind == .undigraph and self.checker.settings().graph.treated_as == .auto) self.b.interpretation.kind = .generic;
         }

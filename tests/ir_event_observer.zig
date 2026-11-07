@@ -13,7 +13,7 @@ const Selection = struct {
     observations: dot.events.Observations = .all,
     extents: bool = true,
 };
-fn Recorder(comptime selection: Selection) type {
+pub fn Recorder(comptime selection: Selection) type {
     return struct {
         pub const wants_begin_statement = selection.begin;
         pub const recover_statements = selection.recovery;
@@ -52,7 +52,7 @@ fn Recorder(comptime selection: Selection) type {
             self.append(.{ .restore = context });
             self.context = context;
         }
-        fn items(self: *const @This()) []const Record {
+        pub fn items(self: *const @This()) []const Record {
             return self.records[0..self.len];
         }
     };

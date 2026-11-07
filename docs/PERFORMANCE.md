@@ -1536,6 +1536,79 @@ allocation-failure cleanup, deep scopes, page boundaries and cancellation at
 every accounted checkpoint. Parser credits and cancellation guarantees are
 unchanged. One-shot event construction still has no shared resumable grant.
 
+### Shared-budget event construction
+
+Development measurement on 2026-11-06, at `4a14fdb` plus the slice-3f changes,
+with Zig 0.17.0 on Apple M4 Pro. The existing one-shot routes were also compared
+against a clean build of `4a14fdb`.
+
+```sh
+zig build bench-ir-event-sessions -Doptimize=fast
+zig build bench-ir-event-sessions -Doptimize=safe
+zig build bench-ir-event-sessions -Doptimize=small
+```
+
+The reporter compares one-shot event construction with `Session.run()`, grants
+of 4,096 and grants of 1. Both session profiles enable metering; no cancellation
+hooks or observers are attached in this timing run. Each cell is the median of
+nine samples after two warmups, with route order rotated between samples.
+Times include parsing, checking, graph construction and scratch cleanup; source
+generation and freeing the returned graph are outside the timer. Separate
+untimed runs measure requested allocation peaks and verify retained bytes.
+These are nine small synthetic shapes, not the 14-workload M corpus above.
+
+Fast results, in milliseconds:
+
+| Input | One-shot | Session `run()` | Grant 4,096 | Grant 1 |
+| --- | ---: | ---: | ---: | ---: |
+| 2,000 edges | 0.278 | 0.959 | 0.968 | 2.130 |
+| 2,000 nodes with attributes | 0.455 | 2.056 | 2.058 | 4.149 |
+| 400 reopened subgraphs | 0.199 | 0.634 | 0.633 | 1.323 |
+| 2,000 nested scopes | 0.175 | 0.398 | 0.398 | 0.864 |
+| Concatenated name with a 64 KiB comment | 0.050 | 0.521 | 0.521 | 1.085 |
+| 5,000 × 5,000 symbolic product | 0.707 | 2.219 | 2.211 | 4.886 |
+| Sparse ports | 0.227 | 0.794 | 0.802 | 1.735 |
+| Dense ports | 0.334 | 1.108 | 1.100 | 2.334 |
+| 1,000 eight-node chains with ports | 0.694 | 2.290 | 2.273 | 4.684 |
+
+With grants of 4,096, session time is **2.28–4.53× one-shot time in Fast**, except
+for the long-comment case at **10.44×**. The corresponding ranges are
+**1.43–3.27× in Safe** (long comment **10.00×**) and **1.89–3.62× in Small**
+(long comment **9.32×**). Budget 1 adds the cost of returning to and re-entering
+the composed driver for every credit. Larger grants do not restore one-shot
+speed: the driver still alternates bounded parser and IR continuations inside
+each call. The long-comment fixture exposes this per-credit overhead against
+the one-shot scanner's tight byte loop. It is not a claim about Unicode names.
+
+These sessions are an explicit scheduling choice, not a faster replacement for
+`parse`. They preserve single-credit progress through scanning, name comparison,
+sorting, table growth and finalization. The implementation shares name-interning
+and attribute-map continuations with Document lowering. Their phase is selected
+at compile time after the caller dispatches, avoiding a second runtime switch.
+Speed builds inline the IR step; Small retains automatic inlining. Further tuning remains
+possible without changing credit units or cancellation checkpoints.
+
+**Memory.** Final graph bytes match the one-shot route on every fixture.
+Session peaks add 100–340 bytes on eight fixtures. Deep nesting adds 72,440 bytes
+(893,088 → 965,528, **+8.1%**) because nesting growth uses bounded copy storage.
+The inline session occupies 4,816 bytes in Fast/Small and 4,984 in Safe, separate
+from these heap figures. Requested peaks exclude borrowed source, allocator
+metadata and process RSS. No symbolic product is expanded.
+
+**Existing-route gate.** The Document/event comparison executable's machine-code
+section is byte-identical before and after this increment in Fast, Safe and
+Small. Three alternating Fast runs over deep nesting, reopened and strict
+subgraphs, long edge chains, large attribute lists and symbolic products show
+identical allocation counts, retained bytes and requested peaks, with both
+ordinary allocation and an Arena. Ordinary-allocator timing differences span
+−3.12% to +1.92% (geometric mean −0.40%); with identical code these are timing
+noise. This gate covers those existing paths, not every possible consumer link
+layout. A separate Fast comparison of existing Document lowering sessions after
+sharing the helpers preserves all credits, cancellation polls and memory
+figures; route geometric-mean times are −2.64% to −0.55% for session calls and
+−1.48% to +0.58% for direct calls. Session tests separately cover cancellation,
+zero grants, observers, runtime policies, both scanners and partial results.
+
 ### Lowering a Document
 
 Development measurement. Times measured at commit `d875891` (2026-10-24);
@@ -2597,6 +2670,8 @@ The other benchmarks cover both scanners where it matters.
 | `bench-string-passthrough` (unreleased) | Real DOT quote scanning, then simulated string checks | |
 | `bench-ir` (unreleased) | IR lowering, expansion, attributes, values and bulk attributes (four programs, one after another) | |
 | `bench-ir-pipeline` (unreleased) | Parse/check/lower phase times, whole-route live peaks, growth and Arena capacity; CSV | `--corpus PATH`, `--case NAME` |
+| `bench-ir-events` (unreleased) | Whole-route Document/event construction time, live peaks and Arena capacity; CSV | `--corpus PATH`, `--case NAME` |
+| `bench-ir-event-sessions` (unreleased) | One-shot event construction against shared-budget sessions: time, memory, allocations and credits; CSV | |
 | `bench-ir-materialized` (unreleased) | Folded attributes against compact reads | |
 | `bench-ir-partial` (unreleased) | Partial IR lowering, lookups, mentions and pair queries | `--attributes-only` |
 | `bench-ir-partial-edges` (unreleased) | Complete against partial edge streaming, folding and memory | |

@@ -9,7 +9,7 @@ const events = @import("events.zig");
 
 const Variant = @import("execution_variant.zig").Variant;
 
-fn Core(comptime actual: support.encoding.Actual, comptime Sink: type, comptime fixed: ?policy.ParseSettings, comptime variant: Variant) type {
+pub fn Core(comptime actual: support.encoding.Actual, comptime Sink: type, comptime fixed: ?policy.ParseSettings, comptime variant: Variant) type {
     const Scratch = scratch.For(events.Context(Sink));
     const Machine = parser.MachineWithProcessor(*Sink, variant.metered(), false, variant.cancellable(), lexer.scannerForEvents(actual, variant.backend(), if (fixed) |s| s.retention.comments else null), fixed, void, variant.singlePoll(), true);
     return struct {
@@ -26,16 +26,16 @@ fn Core(comptime actual: support.encoding.Actual, comptime Sink: type, comptime 
         machine: Machine,
         terminal: ?Result = null,
 
-        fn init(source: []const u8, frames: Scratch.Storage, sink: *Sink, diagnostics: @import("diagnostic.zig").Sink, options: Options) Self {
+        pub fn init(source: []const u8, frames: Scratch.Storage, sink: *Sink, diagnostics: @import("diagnostic.zig").Sink, options: Options) Self {
             return .{
                 .stack = .{ .frames = frames.frames },
                 .machine = .{ .tokens = @FieldType(Machine, "tokens").init(source), .events = sink, .diagnostics = diagnostics, .settings = options.parsing, .cancellation = options.cancellation, .control = .{ .source_info = options.source_info orelse support.encoding.Reader(actual).sourceInfo(source) } },
             };
         }
-        fn bind(self: *Self) void {
+        pub fn bind(self: *Self) void {
             self.machine.scratch = &self.stack;
         }
-        fn settle(self: *Self) void {
+        pub fn settle(self: *Self) void {
             if (self.terminal != null) return;
             const result = self.machine.terminal orelse return;
             self.terminal = .{
@@ -67,13 +67,13 @@ fn Core(comptime actual: support.encoding.Actual, comptime Sink: type, comptime 
             self.settle();
             return self.terminal.?;
         }
-        fn cancel(self: *Self) Result {
+        pub fn cancel(self: *Self) Result {
             self.bind();
             _ = self.machine.cancel();
             self.settle();
             return self.terminal.?;
         }
-        fn advance(self: *Self, budget: usize) Progress {
+        pub fn advance(self: *Self, budget: usize) Progress {
             self.bind();
             const progress = self.machine.advance(budget);
             self.settle();

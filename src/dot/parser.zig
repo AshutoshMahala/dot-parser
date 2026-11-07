@@ -561,8 +561,15 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             // the same dispatch continuation as every other observation.
             var used: usize = if (budget != 0 and self.previewPending()) self.drive(true, 1) else 0;
             used += self.advanceCore(budget - used).work_used;
-            // Queue without reading bytes or borrowing an extra credit.
-            if (budget != 0 and self.terminal == null and !self.aborted and self.work.phase == .scan) {
+            if (budget != 0) self.notePause();
+            return self.progress(used);
+        }
+
+        /// Internal composition boundary: only actual caller pauses request a
+        /// preview, not every private one-credit parser step. No work/dispatch.
+        pub fn notePause(self: *Self) void {
+            if (comptime !preview_notifications) return;
+            if (self.terminal == null and !self.aborted and self.work.phase == .scan) {
                 if (previews.unfinished(&self.tokens, false)) |snapshot| {
                     const old = &self.control.preview;
                     if (!old.active or old.snapshot.span.start != snapshot.span.start or old.snapshot.span.len != snapshot.span.len or old.snapshot.kind != snapshot.kind) {
@@ -571,10 +578,9 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
                     }
                 }
             }
-            return self.progress(used);
         }
 
-        inline fn advanceCore(self: *Self, budget: usize) Progress {
+        pub inline fn advanceCore(self: *Self, budget: usize) Progress {
             // One shared driver. Speed modes need the direct no-run return;
             // Small's outlining instead favors the merged accumulator. These
             // equivalent shapes avoid budget-one regressions in both modes.
@@ -2058,7 +2064,7 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return true;
         }
 
-        fn sinkFailure(self: *Self, err: anyerror) *const Result {
+        pub fn sinkFailure(self: *Self, err: anyerror) *const Result {
             // The event sink failed mid-lifecycle; abort so it can release
             // staged state. `abortDocument` is infallible by contract.
             self.abortEvents(.sink_failure);

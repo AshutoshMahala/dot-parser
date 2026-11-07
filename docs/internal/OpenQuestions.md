@@ -38,7 +38,7 @@ has been discussed.
 | Editor data | Opt-in DOT comments, markup prefixes, attached label trees and scope/subtree completeness; Unreleased DOT recovered regions/gaps, public events, delimiter observations, commit extents and terminal coverage | Markup recovered regions, incremental edits and a language-server layer |
 | Execution — Q27 | Fixed bounded parsing, cancellation; markup validation cancellation | Metered/resumable validation, DOT validation cancellation, shared budgets and chunked input |
 | Encoding — Q23 | Raw units, optional scope-owned encoding validation, native UTF-16/32 readers and byte-coordinate provenance | Native sessions, metered validation and native source excerpts |
-| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, complete/partial one-shot event lowering with observers, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction, query scratch and materialization, optional connection/scope indexes and materialized adjacency; slice-2 verification/performance pass complete | Label-port binding, markup-result association, event session/fixed construction, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide; remaining optional performance costs are recorded in the performance report |
+| Graph layer — Q5/Q17/Q35 | Source-shaped syntax; Unreleased Document lowering, complete/partial event lowering with observers and UTF-8/ASCII sessions, symbolic topology, effective attributes/endpoint ports, borrowed values, bulk attribute folding, qualified partial queries/iteration/materialization, resumable operations, fixed-storage Document construction, query scratch and materialization, optional connection/scope indexes and materialized adjacency; slice-2 verification/performance pass complete | Label-port binding, markup-result association, native event sessions/fixed construction, consumer adapters, marshal/unmarshal and the cgraph compatibility choices listed in the public IR guide; remaining optional performance costs are recorded in the performance report |
 | Footprint/release — Q7/Q14/Q15/Q16/Q24/Q40 | Fixed storage and compile-time specialization | Board budgets, broader grammar exclusion, acceptance thresholds, stability and markup versioning |
 
 Decision status and delivery status remain separate. Preserve question IDs and
@@ -252,9 +252,11 @@ event coverage and committed nested contributions. It returns the existing
 and qualified queries. Abandoned scoped-edge prefixes remain validation facts,
 not graph connections. Observer recovery is independent of IR retention;
 explicit observer stops/errors still stop construction. Operational failure
-never publishes a partial-input graph. Composed resumable execution,
-fixed event-construction storage, combined tree/event output and public pull events remain
-unfinished. *(Embodied: `src/dot/events.zig`, `event_profile.zig`,
+never publishes a partial-input graph. Composed `Session`/`PartialSession` now
+share a grant across UTF-8/ASCII parsing, staging, validation, replay and
+publication. Their bounded continuations retain the same graph family and
+independent observer recovery; native sessions, fixed event-construction
+storage, combined tree/event output and public pull events remain unfinished. *(Embodied: `src/dot/events.zig`, `event_profile.zig`,
 `tests/events.zig`, [public contract](../EVENTS.md).)*
 
 The 2026-10-17 performance follow-up addresses the scoped-tree and scalar Unicode
@@ -1339,8 +1341,8 @@ Bounds remain explicit and metadata-only (pair-universe caps and total interned
 keys). A terminal shortfall preserves already emitted entries but never certifies
 exhaustion; retries start a new stream. Lowering helpers are named `loweringLayout`,
 `loweringBounds` and `partialLoweringBounds` without legacy aliases.
-Complete/partial one-shot event lowering and observers are now available;
-resumable and fixed-storage event routes remain. This does not complete the
+Complete/partial event lowering, observers and UTF-8/ASCII sessions are now
+available; native sessions and fixed-storage event routes remain. This does not complete the
 entire semantic-layer slice. *(Embodied:
 `src/dot/syntax.zig`, `src/ir/`, `docs/IR.md`.)*
 

@@ -10,9 +10,9 @@ const Dot = dot.Profile(.{ .policy = .{ .retention = .{ .partial = true } } });
 // Credit totals include actual copies. Force moving growth for deterministic
 // partition and allocation-failure comparisons (the backing allocator may
 // otherwise resize in place depending on its current page layout).
-const NoResize = struct {
+pub const NoResize = struct {
     backing: std.mem.Allocator,
-    fn allocator(self: *NoResize) std.mem.Allocator {
+    pub fn allocator(self: *NoResize) std.mem.Allocator {
         return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
     }
     fn alloc(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {

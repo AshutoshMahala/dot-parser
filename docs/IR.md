@@ -105,7 +105,7 @@ What `dot.ir.parse` does:
 
 ## Build from events
 
-`IR.FromEvents(Dot)` is an opt-in, run-to-completion route. `parse` returns a
+`IR.FromEvents(Dot)` is an opt-in construction route. `parse` returns a
 complete graph; `parsePartial` can retain facts from broken input. Both return
 the same graph types, views and queries as Document lowering.
 Ordinary `dot.ir.parse` and `IR.parse` keep their Document-based implementation.
@@ -211,7 +211,7 @@ There are intentional execution differences:
 - Parser credits are unchanged. Semantic/validation work has independent total
   accounting and cancellation checkpoints; a callback credit does not pay for
   arbitrary lowering work. Enabling metering does not make this one-shot call
-  pause. There is no composed event-IR session yet.
+  pause; use `Session` or `PartialSession` below when you need to yield.
 
 Compare both routes with
 `zig build bench-ir-events -Doptimize=fast -- --corpus /path/to/generated`.
@@ -273,8 +273,78 @@ IR limits and validation can stop construction earlier than standalone parsing.
 The IR builder also consumes statement-begin dispatches internally even when
 the observer disables them; parser credit totals can therefore differ.
 
-Partial event construction, composed sessions and fixed event-construction
-storage remain planned. Their existing Document routes are available today.
+### Pause event construction
+
+`EventIR.Session` returns the same result as `parse`; `PartialSession` returns
+the same result as `parsePartial`. Both use the existing IR session lifecycle.
+This first implementation accepts UTF-8 and ASCII source. UTF-16/32 remain
+available through the one-shot event calls, not these sessions.
+
+```zig
+const Dot = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true } } });
+const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+const EventIR = IR.FromEvents(Dot);
+var session = try EventIR.PartialSession.init(gpa, source, .{
+    .diagnostics = bag.sink(),
+});
+defer session.deinit();
+while (session.advance(256).outcome == null) {
+    // Return to your scheduler here; keep the source and observer alive.
+}
+var result = try session.takeResult();
+defer result.deinit();
+const graph = result.ir() orelse return error.GraphUnavailable;
+```
+
+A grant covers scanning, event dispatch, staging, validation, semantic replay,
+allocation-copying and final indexes. Long names, duplicate-attribute checks and
+nested statements have bounded continuations. There is no measuring pass or
+hidden Document. Initialization verifies policies and source selection without
+scanning the document or allocating pools.
+
+| Member | Meaning |
+| --- | --- |
+| `advance(budget: u32)` | Consumes at most that many combined credits; metering must be enabled in both profiles |
+| `run()` | Runs to a terminal outcome, including with metering disabled |
+| `Progress.work_used`, `.total_work` | Work in this call and over the operation; `run().work_used` saturates at `maxInt(u32)` |
+| `.phase` | Next work: `parse`, `stage`, `validate`, `replay`, `finalize` or `terminal`; phases can alternate |
+| `.source_frontier` | How far scanning reached; not a finalized-graph frontier |
+| `.outcome` | `success` (graph available), `rejected` (result available with no graph), or `failure` carrying the binding's typed error |
+| `takeResult()` | Transfers the owning result once; `NotReady` before completion, `AlreadyTaken` after transfer, or the operational failure |
+| `cancel()` | Stops the entire operation even when hook polling is disabled; terminal outcomes latch |
+| `peakBytes()` | Peak live requested allocation bytes, including bounded DOT nesting scratch; excludes source and inline session state |
+
+`success` for a partial session means graph construction succeeded; inspect
+`checking` and graph coverage for source validity/completeness. A rejection
+retains its checking summary and diagnostics, but an operational failure never
+publishes a graph. Fixed profiles without both metering capabilities reject
+`advance` at compile time; runtime policies resolve once at initialization and
+return `MeteringDisabled` from `advance` if either phase disabled it.
+
+Cancellation stays independently configured in `.dot` and `.lowering`. Supply
+the same request to both for whole-job cancellation. Enabled hooks are checked
+on every public resume, including zero grants, and at their own intervals during
+their phase's work. A hook can call its session's `cancel()` and return false;
+no further work follows that cancellation. Other callback reentry into the
+session is unsupported. Keep the session unmoved during a call; source, callback
+contexts and an optional observer remain borrowed until completion/deinit.
+
+Sessions charge observer delivery through the parser's existing dispatch credit,
+then drain the single-event mailbox before stepping the parser again. They do
+not add an event log. With `Observe`, forwarding still precedes IR work, and
+observer recovery remains independent of partial retention. Pause previews are
+queued only at actual `advance` boundaries, and their later delivery costs a
+credit. `run()` does not manufacture previews at private scheduling steps.
+Diagnostic order and work totals can differ from the one-shot route; semantic
+results and source coverage follow the same rules. IR `max_work` covers
+construction and validation; it does not silently absorb the parser's credits.
+Session `max_bytes` also covers its growing nesting scratch.
+
+One-shot and session paths have different speed and peak-memory costs; final
+graph storage is the same. See the [measured session overhead](PERFORMANCE.md#shared-budget-event-construction), or compare them with
+`zig build bench-ir-event-sessions -Doptimize=fast`.
+Fixed event-construction storage and native-encoding event sessions remain future
+work. Existing fixed-storage Document lowering remains available.
 
 ## Nodes, names and subgraphs
 
@@ -1632,7 +1702,8 @@ defer graph.deinit();
 ```
 
 - Nothing is inherited from the parser that made the Document, or from an
-  earlier operation. There is no shared parse-plus-IR budget.
+  earlier operation. Document parsing and lowering have separate budgets;
+  [event-based sessions](#pause-event-construction) provide a shared grant.
 - A hook never enables cancellation. A fixed profile without cancellation
   rejects a hook at compile time; a runtime policy with cancellation off ignores
   it. A `void` hook means none. Typed and anonymous hooks are accepted.
@@ -2076,7 +2147,7 @@ Measured numbers are in [Performance](PERFORMANCE.md).
 | `capabilities`, `Node`, `Connection`, `Graph`, `PartialGraph` | This profile's choices and types |
 | `parse`, `parsePartial`, `ParseOptions`, `ParseResult`, `PartialResult` | One-call parsing with this profile |
 | `lowerComplete`, `lowerPartial` | Lower a Document |
-| `FromEvents(Dot)` | Bind complete/partial one-shot construction to a DOT event profile; see [Build from events](#build-from-events) |
+| `FromEvents(Dot)` | Bind complete/partial construction and UTF-8/ASCII sessions to a DOT event profile; see [Build from events](#build-from-events) |
 | `loweringSession`, `partialLoweringSession`, `LoweringSession`, `PartialLoweringSession` | Lower in small steps |
 | `lowerCompleteIn`, `lowerPartialIn`, `FixedLoweringResult`, `FixedPartialLoweringResult` | Fixed-storage lowering |
 | `loweringSessionIn`, `partialLoweringSessionIn`, `FixedLoweringSession`, `FixedPartialLoweringSession` | Fixed-storage lowering in small steps |
@@ -2147,6 +2218,7 @@ Benchmarks (add `-Doptimize=fast`; most also run with `safe` or `small`):
 | `bench-ir` | Lowering, streaming, materialization, attribute queries and value access |
 | `bench-ir-pipeline` | Document-route time and peak memory by phase |
 | `bench-ir-events` | Whole-route Document/event construction time, live peaks and Arena capacity |
+| `bench-ir-event-sessions` | One-shot versus composed sessions: time, peak/final memory, allocations and credits |
 | `bench-ir-materialized` | Bulk attribute folding against compact edge queries |
 | `bench-ir-sessions` | Direct and step-by-step materialization, budgets and memory |
 | `bench-ir-lowering-sessions` | Direct, metered, cancellable and runtime-policy lowering against sessions; direct calls report no credit counts |
@@ -2165,12 +2237,12 @@ Measured results are in [Performance](PERFORMANCE.md).
 
 ## Not available yet
 
-- Event-route shared-budget sessions and fixed storage; complete/partial
-  one-shot [event construction](#build-from-events) and observers are available
+- Native-encoding event sessions and fixed event storage; complete/partial
+  [event construction](#build-from-events), observers and UTF-8/ASCII sessions are available
 - Checking that a port name exists in a node's label, or binding it to the label
 - Finding a node by name (`findNode`) in small steps
 - Structured `tailPort()`/`headPort()` and value formatting in small steps
-- One shared budget for parsing and lowering
+- Shared-budget Document construction followed by lowering (the event route already shares one)
 - Full cgraph compatibility; see the [known differences](#default-and-update-rules)
 
 See the [roadmap](ROADMAP.md).

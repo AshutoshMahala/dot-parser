@@ -65,6 +65,9 @@ fn Observed(comptime IR: type, comptime config: ir.Config, comptime Dot: type, c
                 }
             };
         }
+        pub const Phase = @import("event_session.zig").Phase;
+        pub const Session = @import("event_session.zig").Session(Self, config, Dot, Observer, false);
+        pub const PartialSession = @import("event_session.zig").Session(Self, config, Dot, Observer, true);
         pub const parse = Constructor(false).parse;
         pub const parsePartial = Constructor(true).parse;
         // Bind the retention choice without an extra runtime entry-point wrapper.

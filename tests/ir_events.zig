@@ -90,7 +90,7 @@ fn sameAttribute(left: anytype, right: @TypeOf(left)) !void {
         try std.testing.expectEqual(l.value().kind(), rr.value().kind());
     }
 }
-fn sameGraphs(left: anytype, right: @TypeOf(left)) !void {
+pub fn sameGraphs(left: anytype, right: @TypeOf(left)) !void {
     try std.testing.expectEqual(left.kind, right.kind);
     try std.testing.expectEqual(left.strict, right.strict);
     try std.testing.expectEqual(left.nodes.len, right.nodes.len);
@@ -211,7 +211,7 @@ test "event IR runtime policies resolve independently, including one-shot meteri
     const Dot = dot.Profile(.{ .runtime_policy = true });
     const Lower = dot.ir.Lowering(.{ .runtime_policy = true });
     const E = Lower.FromEvents(Dot);
-    try std.testing.expect(!@hasDecl(E, "Session"));
+    try std.testing.expect(@hasDecl(E, "Session"));
     var result = try E.parse(a, "graph{a->b}", .{
         .dot = .{ .policy = .{ .validation = .{ .graph = .{ .treated_as = .auto } }, .execution = .{ .metering = true } } },
         .lowering = .{ .policy = .{ .execution = .{ .metering = true } } },

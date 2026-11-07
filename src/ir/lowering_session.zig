@@ -258,7 +258,7 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
             self.b.a = if (fixed_storage) &self.memory else self.memory.allocator();
             return self.b.publish();
         }
-        fn startName(self: *Self, family: Family, name: t.Range, after: Phase) r.Error!void {
+        pub fn startName(self: *Self, family: Family, name: t.Range, after: Phase) r.Error!void {
             self.family = family;
             self.name = name;
             self.intern_after = after;
@@ -266,26 +266,35 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
             self.hasher = std.hash.Wyhash.init(0);
             self.phase = .intern_hash;
         }
-        fn table(self: *Self) *names.Table {
+        pub fn internBuilder(self: *Self) *B {
+            return &self.b;
+        }
+        pub fn table(self: *Self) *names.Table {
             return switch (self.family) {
                 .node => &self.b.node_table,
                 .scope => &self.b.scope_table,
                 .key => if (rep.attributes) &self.b.attribute_data.table else unreachable,
             };
         }
-        fn storedHash(self: *Self, id: u32) u64 {
+        pub fn storedHash(self: *Self, id: u32) u64 {
             return switch (self.family) {
                 .node => self.b.nodes.items[id].hash,
                 .scope => self.b.scopes.items[id].hash,
                 .key => if (rep.attributes) self.b.attribute_data.keys.items[id].hash else unreachable,
             };
         }
-        fn storedName(self: *Self, id: u32) t.Range {
+        pub fn storedName(self: *Self, id: u32) t.Range {
             return switch (self.family) {
                 .node => self.b.nodes.items[id].name,
                 .scope => self.b.scopes.items[id].name.?,
                 .key => if (rep.attributes) self.b.attribute_data.keys.items[id].name else unreachable,
             };
+        }
+        pub fn internScopeName(self: *Self) ?t.Range {
+            return self.b.doc.subgraph_records[self.index - 1].name;
+        }
+        pub fn internScopeOccurrence(self: *Self) u32 {
+            return self.index;
         }
         fn beginEnter(self: *Self, id: u32) void {
             self.enter_id = id;
@@ -310,7 +319,10 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
             self.copy_after = after;
             self.phase = .copy_range;
         }
-        fn applyRoot(self: *Self) *u32 {
+        pub fn applyAfter(_: *Self) Phase {
+            return .walk;
+        }
+        pub fn applyRoot(self: *Self) *u32 {
             const scope = &self.b.attribute_data.scopes[@backingInt(self.b.occurrences[self.occurrence].scope)];
             return switch (self.target) {
                 .node => |id| &self.b.nodes.items[@backingInt(id)].attribute_state,
@@ -540,65 +552,7 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
                     b.attribute_data.scopes[self.index] = .{};
                     self.index += 1;
                 } else unreachable,
-                .enter => {
-                    if (!rep.attributes) {
-                        self.phase = .enter_push;
-                        return;
-                    }
-                    if (self.enter_id >= b.occurrences.len) return error.InvalidDocument;
-                    const id = @backingInt(b.occurrences[self.enter_id].scope);
-                    if (b.attribute_data.scopes.len == 0 or id == 0 or self.enter_stage == 2) {
-                        self.phase = .enter_push;
-                        return;
-                    }
-                    const parent = b.attribute_data.scopes[@backingInt(b.scopes.items[id].parent.?)];
-                    const scope = &b.attribute_data.scopes[id];
-                    if (self.enter_stage == 0 and @backingInt(b.scopes.items[id].first_occurrence) == self.enter_id) scope.graph = parent.graph;
-                    const changed = if (self.enter_stage == 0) scope.parent_node != parent.node else scope.parent_edge != parent.edge;
-                    if (!changed) {
-                        self.enter_stage += 1;
-                        return;
-                    }
-                    self.overlay_root = if (self.enter_stage == 0) parent.node else parent.edge;
-                    self.overlay_cursor = if (self.enter_stage == 0) scope.local_node else scope.local_edge;
-                    self.overlay_depth = 0;
-                    self.mutable_from = try r.index(b.attribute_data.cells.items.len);
-                    self.phase = .enter_overlay;
-                },
-                .enter_overlay => if (rep.attributes) {
-                    if (self.overlay_cursor != none) {
-                        if (self.overlay_depth == self.overlay_path.len) return error.IndexLimit;
-                        self.overlay_path[self.overlay_depth] = self.overlay_cursor;
-                        self.overlay_depth += 1;
-                        self.overlay_cursor = b.attribute_data.cells.items[self.overlay_cursor].left;
-                    } else if (self.overlay_depth != 0) {
-                        self.overlay_depth -= 1;
-                        const cell = b.attribute_data.cells.items[self.overlay_path[self.overlay_depth]];
-                        self.overlay_next = cell.right;
-                        self.setting = p.Set.init(self.overlay_root, cell.key, cell.attribute);
-                        self.phase = .enter_overlay_set;
-                    } else {
-                        const id = @backingInt(b.occurrences[self.enter_id].scope);
-                        const parent = b.attribute_data.scopes[@backingInt(b.scopes.items[id].parent.?)];
-                        const scope = &b.attribute_data.scopes[id];
-                        if (self.enter_stage == 0) {
-                            scope.node = self.overlay_root;
-                            scope.parent_node = parent.node;
-                        } else {
-                            scope.edge = self.overlay_root;
-                            scope.parent_edge = parent.edge;
-                        }
-                        self.enter_stage += 1;
-                        self.phase = .enter;
-                    }
-                } else unreachable,
-                .enter_overlay_set => if (rep.attributes) {
-                    if (try self.setting.step(&b.attribute_data, &self.cell_growth, a, b.limits.max_attribute_states, self.mutable_from)) |root| {
-                        self.overlay_root = root;
-                        self.overlay_cursor = self.overlay_next;
-                        self.phase = .enter_overlay;
-                    }
-                } else unreachable,
+                inline .enter, .enter_overlay, .enter_overlay_set => |phase| try @import("lowering_attribute_steps.zig").enter(rep, phase, self),
                 .enter_push => {
                     if (!try self.frame_growth.step(&b.stack, 1, a)) return;
                     const body = try b.scopeBody(self.enter_id);
@@ -860,216 +814,11 @@ pub fn SessionWith(comptime rep: @import("representation.zig").Identity, comptim
                     self.apply_local = false;
                     self.phase = .bind;
                 } else unreachable,
-                .bind => if (rep.attributes) {
-                    if (self.attribute_index == self.range.start + self.range.len) {
-                        self.attribute_index = self.range.start;
-                        self.phase = self.bind_after;
-                        return;
-                    }
-                    if (b.attribute_data.meta[self.attribute_index].key != none) {
-                        self.attribute_index += 1;
-                        return;
-                    }
-                    try self.startName(.key, b.attributes[self.attribute_index].key, .bind_done);
-                } else unreachable,
-                .bind_done => if (rep.attributes) {
-                    b.attribute_data.meta[self.attribute_index] = .{ .key = self.intern_id, .origin = self.origin };
-                    if (self.actual != .utf8 and self.actual != .ascii) {
-                        self.reader = .{ .raw = try b.raw(b.attributes[self.attribute_index].value), .actual = self.actual };
-                        self.phase = .bind_value;
-                    } else {
-                        self.attribute_index += 1;
-                        self.phase = .bind;
-                    }
-                } else unreachable,
-                .bind_value => {
-                    if (try self.reader.step() == .end) {
-                        if (!rep.attributes or self.bind_after == .node_port) self.phase = .node_port else {
-                            self.attribute_index += 1;
-                            self.phase = .bind;
-                        }
-                    }
-                },
-                .apply => if (rep.attributes) {
-                    if (self.attribute_index == self.range.start) self.mutable_from = try r.index(b.attribute_data.cells.items.len);
-                    if (self.attribute_index == self.range.start + self.range.len) {
-                        self.phase = .apply_next;
-                        return;
-                    }
-                    self.setting = p.Set.init(self.applyRoot().*, b.attribute_data.meta[self.attribute_index].key, self.attribute_index);
-                    self.phase = .apply_set;
-                } else unreachable,
-                .apply_set => if (rep.attributes) {
-                    if (try self.setting.step(&b.attribute_data, &self.cell_growth, a, b.limits.max_attribute_states, self.mutable_from)) |root| {
-                        self.applyRoot().* = root;
-                        self.attribute_index += 1;
-                        self.phase = .apply;
-                    }
-                } else unreachable,
-                .apply_next => if (rep.attributes) {
-                    if (!self.apply_local and self.target == .defaults and self.target.defaults != .graph and b.occurrences[self.occurrence].scope != .root) {
-                        self.apply_local = true;
-                        self.attribute_index = self.range.start;
-                        self.phase = .apply;
-                    } else self.phase = .walk;
-                } else unreachable,
+                inline .bind, .bind_done, .bind_value => |phase| try @import("lowering_attribute_steps.zig").bind(rep, phase, self),
+                inline .apply, .apply_set, .apply_next => |phase| try @import("lowering_attribute_steps.zig").apply(rep, phase, self),
                 // This reader transition can run once per source unit, even
                 // when comment/concatenation glue emits no byte to hash.
-                .intern_hash => switch (try @call(.always_inline, p.Name(caps).step, .{&self.reader})) {
-                    .pending => {},
-                    .byte => |byte| self.hasher.update(&.{byte}),
-                    .end => {
-                        self.hash = self.hasher.final();
-                        if (self.family == .scope) {
-                            const parent = @backingInt(self.scope_parent);
-                            self.hash = std.hash.Wyhash.hash(self.hash, std.mem.asBytes(&parent));
-                        }
-                        if (rep.attributes and self.family == .key) self.hash ^= @as(u64, @backingInt(self.kind));
-                        const slots = self.table().slots;
-                        self.slot = if (slots.len == 0) 0 else @intCast(self.hash & (slots.len - 1));
-                        self.phase = .intern_probe;
-                    },
-                },
-                .intern_probe => {
-                    const slots = self.table().slots;
-                    if (slots.len == 0 or slots[self.slot] == none) {
-                        self.phase = .intern_prepare;
-                        return;
-                    }
-                    const id = slots[self.slot];
-                    const compatible = switch (self.family) {
-                        .node => true,
-                        .scope => b.scopes.items[id].parent.? == self.scope_parent,
-                        .key => if (rep.attributes) b.attribute_data.keys.items[id].kind == self.kind else unreachable,
-                    };
-                    if (compatible and self.storedHash(id) == self.hash) {
-                        self.intern_id = id;
-                        self.reader = .{ .raw = try b.raw(self.name), .actual = self.actual };
-                        self.comparison = .{ .raw = try b.raw(self.storedName(id)), .actual = self.actual };
-                        self.left_byte = null;
-                        self.left_end = false;
-                        self.phase = .intern_equal;
-                    } else self.slot = @intCast((self.slot + 1) & (slots.len - 1));
-                },
-                .intern_equal => {
-                    if (self.left_byte == null and !self.left_end) {
-                        switch (try self.reader.step()) {
-                            .pending => {},
-                            .byte => |v| self.left_byte = v,
-                            .end => self.left_end = true,
-                        }
-                        return;
-                    }
-                    const next = try self.comparison.step();
-                    if (next == .pending) return;
-                    if (next == .end and self.left_end) {
-                        self.phase = self.intern_after;
-                        return;
-                    }
-                    if (next == .byte and !self.left_end and self.left_byte.? == next.byte) self.left_byte = null else {
-                        self.slot = @intCast((self.slot + 1) & (self.table().slots.len - 1));
-                        self.phase = .intern_probe;
-                    }
-                },
-                .intern_prepare => {
-                    const table_value = self.table();
-                    if (table_value.slots.len != 0 and table_value.count < table_value.slots.len / 2) {
-                        self.phase = .intern_append;
-                        return;
-                    }
-                    if (fixed_storage) {
-                        if (self.family == .node and b.nodes.items.len >= b.limits.max_nodes) return error.NodeLimit;
-                        self.new_slots = switch (self.family) {
-                            inline else => |family| blk: {
-                                const field = switch (family) {
-                                    .node => "node_slots",
-                                    .scope => "scope_slots",
-                                    .key => if (rep.attributes) "key_slots" else unreachable,
-                                };
-                                try a.ensureTable(field, table_value.count + 1);
-                                break :blk a.slice(field);
-                            },
-                        };
-                    } else {
-                        const capacity = if (table_value.slots.len == 0) 16 else std.math.mul(usize, table_value.slots.len, 2) catch return error.IndexLimit;
-                        if (capacity > std.math.maxInt(u32)) return error.IndexLimit;
-                        self.new_slots = try storage.allocate(u32, a, capacity);
-                    }
-                    self.table_index = 0;
-                    self.phase = .table_clear;
-                },
-                .table_clear => {
-                    if (self.table_index == self.new_slots.len) {
-                        self.table_index = 0;
-                        self.phase = .rehash_scan;
-                        return;
-                    }
-                    const end = @min(self.new_slots.len, @as(usize, self.table_index) + 16);
-                    @memset(self.new_slots[self.table_index..end], none);
-                    self.table_index = @intCast(end);
-                },
-                .rehash_scan => {
-                    const slots = self.table().slots;
-                    if (self.table_index == slots.len) {
-                        if (!fixed_storage) storage.release(u32, a, slots);
-                        self.table().slots = self.new_slots;
-                        self.new_slots = &.{};
-                        // Growth invalidates the empty slot found by lookup.
-                        self.slot = @intCast(self.hash & (self.table().slots.len - 1));
-                        self.phase = .intern_append;
-                        return;
-                    }
-                    self.rehash_id = slots[self.table_index];
-                    self.table_index += 1;
-                    if (self.rehash_id != none) {
-                        self.slot = @intCast(self.storedHash(self.rehash_id) & (self.new_slots.len - 1));
-                        self.phase = .rehash_probe;
-                    }
-                },
-                .rehash_probe => {
-                    if (self.new_slots[self.slot] == none) {
-                        self.new_slots[self.slot] = self.rehash_id;
-                        self.phase = .rehash_scan;
-                    } else self.slot = @intCast((self.slot + 1) & (self.new_slots.len - 1));
-                },
-                .intern_append => {
-                    switch (self.family) {
-                        .node => {
-                            if (b.nodes.items.len >= b.limits.max_nodes) return error.NodeLimit;
-                            self.intern_id = try r.index(b.nodes.items.len);
-                            if (self.intern_id >= t.node_bit) return error.IndexLimit;
-                            if (!try self.node_growth.stepCapped(&b.nodes, 1, a, try b.nodeCapacityBound())) return;
-                            const state = if (!rep.attributes) {} else if (b.attribute_data.scopes.len == 0) none else b.attribute_data.scopes[@backingInt(b.occurrences[self.occurrence].scope)].node;
-                            b.nodes.appendAssumeCapacity(.{ .name = self.name, .first_mention = b.mention_count, .attribute_state = state, .hash = self.hash });
-                        },
-                        .scope => {
-                            if (!try self.scope_growth.step(&b.scopes, 1, a)) return;
-                            self.intern_id = try r.index(b.scopes.items.len);
-                            const name = doc.subgraph_records[self.index - 1].name;
-                            b.scopes.appendAssumeCapacity(.{ .parent = self.scope_parent, .name = name, .first_occurrence = @fromBackingInt(self.index), .hash = self.hash });
-                            if (name == null) {
-                                self.phase = self.intern_after;
-                                return;
-                            }
-                        },
-                        .key => if (rep.attributes) {
-                            if (!try self.key_growth.step(&b.attribute_data.keys, 1, a)) return;
-                            self.intern_id = try r.index(b.attribute_data.keys.items.len);
-                            b.attribute_data.keys.appendAssumeCapacity(.{ .name = self.name, .hash = self.hash, .first_attribute = self.attribute_index, .kind = self.kind });
-                        } else unreachable,
-                    }
-                    // Without index growth, lookup already located an empty
-                    // slot. Keep it across bounded record-list growth as well.
-                    self.phase = .intern_insert;
-                },
-                .intern_insert => {
-                    const slots = self.table().slots;
-                    if (slots[self.slot] == none) {
-                        slots[self.slot] = self.intern_id;
-                        self.table().count += 1;
-                        self.phase = self.intern_after;
-                    } else self.slot = @intCast((self.slot + 1) & (slots.len - 1));
-                },
+                inline .intern_hash, .intern_probe, .intern_equal, .intern_prepare, .table_clear, .rehash_scan, .rehash_probe, .intern_append, .intern_insert => |phase| try @import("lowering_intern.zig").step(rep, fixed_storage, phase, self),
                 .gap => if (partial) {
                     if (!try self.gap_growth.step(&b.publicationState().coverage_data.entries, 1, a)) return;
                     b.publicationState().coverage_data.entries.appendAssumeCapacity(.{ .gap = self.gap_value, .boundary = if (rep.attributes) try r.index(b.declarations.items.len) else {}, .connection_boundary = b.connection_count });

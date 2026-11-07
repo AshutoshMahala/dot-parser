@@ -70,9 +70,11 @@ A few rules make budgets predictable:
 
 Credits measure work, not time. They don't count the time spent inside your
 own callbacks (your diagnostic sink, your cancel check, your event callbacks).
-DOT and markup validation, decoding names and printing diagnostics are
-separate steps and aren't metered. The standalone string checker meters its
-own checks; see [below](#standalone-string-validation).
+Standalone DOT and markup validation and printing diagnostics are separate
+steps and aren't metered by a parser session. The standalone string checker
+meters its own checks; see [below](#standalone-string-validation). The
+[event-based IR sessions](IR.md#pause-event-construction) share one grant across
+DOT parsing, validation and graph construction, including name resolution.
 
 ## Standalone string validation
 

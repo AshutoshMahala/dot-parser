@@ -210,7 +210,13 @@ encodings are read.
 | `event_builder.zig` | Active-statement staging and replay through shared semantic primitives |
 | `event_observer.zig` | Optional typed forwarding, subscription filtering and observer lifecycle |
 | `event_storage.zig` | Private construction pages and checked copying into ordinary contiguous IR pools |
-| `event_validation.zig` | Bounded committed-group and source checks without a Document |
+| `event_validation.zig` | One-shot committed-group and source checks without a Document |
+| `event_session.zig` | Composes DOT and IR under one grant, with typed stops and ownership transfer |
+| `event_cursor.zig` | Bounded parser driver and growing nesting scratch |
+| `event_session_builder.zig` | Resumable staging, replay, partial coverage and publication |
+| `event_session_storage.zig` | Bounded growth and compaction of event storage |
+| `event_validation_session.zig` | Resumable duplicate/catalog and encoding checks |
+| `lowering_intern.zig`, `lowering_attribute_steps.zig` | Bounded name and attribute operations shared by both construction routes |
 | `lowering_session.zig` | Builds it in small steps |
 | `lowering_primitives.zig` | Small bounded steps used by lowering sessions |
 | `lowering_types.zig` | State records shared by the direct and step-by-step builders |

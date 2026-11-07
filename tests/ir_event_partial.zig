@@ -21,7 +21,7 @@ fn attribute(left: anytype, right: @TypeOf(left)) !void {
         try std.testing.expectEqualStrings(lw.buffered(), rw.buffered());
     }
 }
-fn graphs(left: anytype, right: @TypeOf(left)) !void {
+pub fn graphs(left: anytype, right: @TypeOf(left)) !void {
     try equal(left.state(), right.state());
     try equal(left.kind(), right.kind());
     inline for (.{ "declared_kind", "strict", "name", "source_info", "occurrences", "scopes", "bodies", "mentions", "endpoint_ports" }) |field|

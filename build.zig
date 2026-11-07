@@ -107,6 +107,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ir_session_unknown", .message = "unknown IR materialization option: attributtes" },
         .{ .name = "ir_session_runtime", .message = "unable to resolve comptime value" },
         .{ .name = "ir_session_limit", .message = "unknown IR materialization option field: max_pair" },
+        .{ .name = "ir_event_metering", .message = "composed advance requires metering in both DOT and IR profiles; use run()" },
+        .{ .name = "ir_event_lowering_metering", .message = "composed advance requires metering in both DOT and IR profiles; use run()" },
         .{ .name = "ir_lowering_metering", .message = "metering is disabled; use run()" },
         .{ .name = "ir_lowering_interval", .message = "IR cancellation_interval must be positive" },
         .{ .name = "ir_lowering_runtime", .message = "runtime policy is disabled; the baseline is verified at compile time" },
@@ -731,6 +733,16 @@ pub fn build(b: *std.Build) void {
     run_ir_events.has_side_effects = true;
     b.step("bench-ir-events", "Compare Document and event IR time, live peaks and Arena capacity (CSV)").dependOn(&run_ir_events.step);
     check_benches.dependOn(&ir_events.step);
+    const ir_event_sessions = b.addExecutable(.{ .name = "ir_event_sessions", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_event_sessions.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    const run_ir_event_sessions = b.addRunArtifact(ir_event_sessions);
+    run_ir_event_sessions.has_side_effects = true;
+    b.step("bench-ir-event-sessions", "Compare event one-shot and shared-budget sessions (CSV)").dependOn(&run_ir_event_sessions.step);
+    check_benches.dependOn(&ir_event_sessions.step);
     const phase_memory_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("bench/phase_memory.zig"),
         .target = target,
