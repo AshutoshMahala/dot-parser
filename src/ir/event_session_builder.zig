@@ -248,6 +248,20 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
         pub fn idle(self: *const Self) bool {
             return self.phase == .idle;
         }
+        pub fn hashing(self: *const Self) bool {
+            return self.phase == .intern_hash;
+        }
+        /// Execute the same single-unit hash steps without routing each byte
+        /// through the composition or full semantic switch. No callouts occur
+        /// here; the caller caps this run by work, grant and polling allowance.
+        pub fn advanceHash(self: *Self, allowance: u32) struct { used: u32, failure: ?r.Error = null } {
+            var used: u32 = 0;
+            while (used < allowance and self.phase == .intern_hash) {
+                used += 1;
+                @import("lowering_intern.zig").step(rep, false, Phase.intern_hash, self) catch |err| return .{ .used = used, .failure = err };
+            }
+            return .{ .used = used };
+        }
         pub fn phaseKind(self: *const Self) enum { stage, validate, replay, finalize } {
             return switch (self.phase) {
                 .receive, .begin_statement, .begin_scope, .scope_done, .scope_arrays, .scope_install => .stage,

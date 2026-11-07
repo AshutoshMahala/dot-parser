@@ -600,7 +600,18 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             return self.progress(self.drive(true, budget));
         }
 
-        fn drive(self: *Self, comptime bounded: bool, budget: usize) usize {
+        /// Internal composition: scan up to the allowance, or perform one
+        /// grammar/dispatch step. Return before another event or nesting push.
+        /// Uses exactly the ordinary driver's credits and token transitions.
+        pub inline fn advanceWork(self: *Self, budget: usize) usize {
+            return @call(.always_inline, driveWork, .{ self, true, budget, true });
+        }
+
+        inline fn drive(self: *Self, comptime bounded: bool, budget: usize) usize {
+            return self.driveWork(bounded, budget, false);
+        }
+
+        fn driveWork(self: *Self, comptime bounded: bool, budget: usize, comptime one_step: bool) usize {
             // Runtime profiles select the polling class at init/reset, just as
             // they select scanner and metering. Each machine has one hot loop.
             const fixed_interval: ?u32 = if (fixed) |p| p.cancellation_interval else if (single_poll) 1 else null;
@@ -608,9 +619,14 @@ pub fn MachineWithProcessor(comptime EventsPtr: type, comptime metered: bool, co
             self.tokens.setRetainComments(self.retainComments());
             self.tokens.setNumeralCheck(self.numeralSeverity() != .off);
             var remaining = if (bounded) budget else {};
+            var first = if (one_step) true else {};
             var polling: execution.CancellationPolling(cancellable, fixed_interval) = .{};
             const interval = fixed_interval orelse self.settings.cancellation_interval;
             while (true) {
+                if (one_step) {
+                    if (!first) break;
+                    first = false;
+                }
                 // Every entry checks, including zero-budget calls. Failures and
                 // successful commits still latch before another poll.
                 if (cancellable and (fixed_interval == 1 or polling.due(interval))) {

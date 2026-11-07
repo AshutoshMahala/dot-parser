@@ -54,6 +54,9 @@ statements after an error, too.
     independent recovery, limits and cancellation. This increment accepts UTF-8
     and ASCII; native-encoding sessions and fixed event storage remain pending.
     The existing one-shot/default paths remain separate.
+    Scanner and name-hashing runs share the same credit and cancellation
+    boundaries with less dispatch overhead; nesting scratch grows only before
+    a possible scope push and is released before final IR publication.
   - **Reading the graph.** Node, subgraph and edge views; `findNode`,
     `hasEdge` and membership queries; attribute lookup and listing; value views
     that keep the original spelling and print the joined value with `{f}`; edge

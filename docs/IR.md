@@ -340,6 +340,13 @@ results and source coverage follow the same rules. IR `max_work` covers
 construction and validation; it does not silently absorb the parser's credits.
 Session `max_bytes` also covers its growing nesting scratch.
 
+Inside a grant, scanning and name hashing can run several existing credits in
+one tight loop. Each run stops at the remaining grant, its cancellation polling
+allowance or a phase boundary; hashing also respects the remaining IR work limit.
+An event handoff is always drained before parsing continues. One-credit grants
+and interval-one polling still step one credit at a time. Nesting copies remain
+limited to 64 bytes per credit, and parser frames are freed when parsing ends.
+
 One-shot and session paths have different speed and peak-memory costs; final
 graph storage is the same. See the [measured session overhead](PERFORMANCE.md#shared-budget-event-construction), or compare them with
 `zig build bench-ir-event-sessions -Doptimize=fast`.

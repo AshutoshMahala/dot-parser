@@ -307,3 +307,191 @@ test "event session construction failures abort as sink failures rather than can
     try equal(@as(E.Error, error.NodeLimit), session.run().outcome.?.failure);
     try equal(.sink_failure, observer.items()[observer.len - 1].abort.document);
 }
+
+test "event session batching preserves every credit boundary and source frontier" {
+    var source: std.Io.Writer.Allocating = .init(a);
+    defer source.deinit();
+    try source.writer.writeAll("digraph { \"a\" /*");
+    try source.writer.splatByteAll('x', 2048);
+    try source.writer.writeAll("*/ + \"b\" -> { café; z } [x=1,x=2]; broken[label=; later; }");
+    inline for (.{ .scalar, .block }) |backend| {
+        const E = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } }).FromEvents(dot.Profile(.{ .policy = .{ .scanner = backend, .execution = .{ .metering = true }, .validation = .{ .repeated_attribute = .warning } } }));
+        for ([_]u32{ 2, 7, 64, 4096 }) |grant| {
+            var allocator: @import("ir_lowering_sessions.zig").NoResize = .{ .backing = a };
+            var left_bag = dot.FixedDiagnosticBag(32){};
+            var right_bag = dot.FixedDiagnosticBag(32){};
+            var left = try E.PartialSession.init(allocator.allocator(), source.written(), .{ .diagnostics = left_bag.sink() });
+            defer left.deinit();
+            var right = try E.PartialSession.init(allocator.allocator(), source.written(), .{ .diagnostics = right_bag.sink() });
+            defer right.deinit();
+            while (true) {
+                const chunk = right.advance(grant);
+                var count: u32 = 0;
+                var one: E.PartialSession.Progress = undefined;
+                while (count < grant) {
+                    one = left.advance(1);
+                    count += one.work_used;
+                    if (one.outcome != null) break;
+                }
+                try equal(count, chunk.work_used);
+                try equal(one.total_work, chunk.total_work);
+                try equal(one.source_frontier, chunk.source_frontier);
+                try equal(one.phase, chunk.phase);
+                try equal(one.outcome, chunk.outcome);
+                try equal(left_bag.items(), right_bag.items());
+                if (chunk.outcome != null) break;
+            }
+            var l = try left.takeResult();
+            defer l.deinit();
+            var rr = try right.takeResult();
+            defer rr.deinit();
+            try equal(l.checking, rr.checking);
+            try @import("ir_event_partial.zig").graphs(l.ir().?, rr.ir().?);
+        }
+    }
+}
+
+test "event session batching respects both cancellation intervals and zero grants" {
+    var source: std.Io.Writer.Allocating = .init(a);
+    defer source.deinit();
+    try source.writer.writeAll("digraph {\"a\"/*");
+    try source.writer.splatByteAll('x', 4096);
+    try source.writer.writeAll("*/+\"b\"->c}");
+    const E = dot.ir.Lowering(.{ .runtime_policy = true }).FromEvents(dot.Profile(.{ .runtime_policy = true }));
+    const S = E.Session;
+    const Request = struct {
+        session: ?*S = null,
+        ir: bool,
+        last: u64 = 0,
+        largest: u64 = 0,
+        calls: u32 = 0,
+        stop_after: ?u64 = null,
+        fn poll(context: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            const s = self.session.?;
+            const ir_work = (dot.ir.Limits{}).max_work - s.builder.d.b.work.remaining;
+            const work = if (self.ir) ir_work else s.total_work - ir_work;
+            self.largest = @max(self.largest, work - self.last);
+            self.last = work;
+            self.calls += 1;
+            if (self.stop_after) |at| if (work >= at) {
+                s.cancel();
+                return false; // Reentrant cancellation must still latch.
+            };
+            return false;
+        }
+    };
+    inline for (.{ .scalar, .block }) |backend| for ([_]u32{ 1, 7, 64 }) |interval| {
+        for ([_]?bool{ null, false, true }) |stop_ir| {
+            var outer = Request{ .ir = false, .stop_after = if (stop_ir == false) 50 else null };
+            var inner = Request{ .ir = true, .stop_after = if (stop_ir == true) 50 else null };
+            var session = try S.init(a, source.written(), .{
+                .dot = .{ .policy = .{ .scanner = backend, .execution = .{ .metering = true, .cancellation = true, .cancellation_interval = interval } }, .cancellation = .{ .context = &outer, .is_requested = Request.poll } },
+                .lowering = .{ .policy = .{ .execution = .{ .metering = true, .cancellation = true, .cancellation_interval = interval } }, .cancellation = .{ .context = &inner, .is_requested = Request.poll } },
+            });
+            defer session.deinit();
+            outer.session = &session;
+            inner.session = &session;
+            try equal(@as(u32, 0), (try session.advance(0)).work_used);
+            try equal(@as(u32, 1), outer.calls);
+            try equal(@as(u32, 1), inner.calls);
+            const done = session.run();
+            try expect(outer.largest <= interval);
+            try expect(inner.largest <= interval);
+            if (stop_ir != null) {
+                try equal(@as(E.Error, error.Cancelled), done.outcome.?.failure);
+                try equal(@as(u32, 0), (try session.advance(4096)).work_used);
+                try std.testing.expectError(error.Cancelled, session.takeResult());
+            } else {
+                var result = try session.takeResult();
+                defer result.deinit();
+                try expect(result.ir() != null);
+            }
+        }
+    };
+}
+
+test "event sessions bound nesting copies and release frames before IR publication" {
+    const E = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } }).FromEvents(dot.Profile(.{ .policy = .{ .execution = .{ .metering = true } } }));
+    var source: std.Io.Writer.Allocating = .init(a);
+    defer source.deinit();
+    try source.writer.writeAll("digraph{");
+    for (0..129) |_| try source.writer.writeAll("{");
+    try source.writer.writeAll("a;");
+    for (0..129) |_| try source.writer.writeAll("}");
+    try source.writer.writeAll("}");
+    var allocator: @import("ir_lowering_sessions.zig").NoResize = .{ .backing = a };
+    var s = try E.Session.init(allocator.allocator(), source.written(), .{});
+    defer s.deinit();
+    var observed_copy = false;
+    var peak_frames: usize = 0;
+    while (true) {
+        const copied = s.cursor.growth.growth.copied;
+        const p = s.advance(1);
+        peak_frames = @max(peak_frames, s.cursor.core.stack.frames.len);
+        const now = s.cursor.growth.growth.copied;
+        if (now > copied) {
+            observed_copy = true;
+            try expect(now - copied <= 64);
+        }
+        if (p.outcome != null) break;
+    }
+    try expect(observed_copy);
+    try equal(@as(usize, 256), peak_frames);
+    try equal(@as(usize, 0), s.cursor.core.stack.frames.len);
+    var result = try s.takeResult();
+    defer result.deinit();
+    try expect(result.ir() != null);
+}
+
+test "event session hash batches stop at the lifetime work limit" {
+    const E = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } }).FromEvents(dot.Profile(.{ .policy = .{ .execution = .{ .metering = true } } }));
+    const source = "digraph{\"a\"/*a comment longer than the remaining hash allowance*/+\"b\";}";
+    var probe = try E.Session.init(a, source, .{});
+    defer probe.deinit();
+    while (!probe.builder.hashing()) try expect(probe.advance(1).outcome == null);
+    const limit = (dot.ir.Limits{}).max_work - probe.builder.d.b.work.remaining + 13;
+    var total: ?u64 = null;
+    var frontier: ?u32 = null;
+    for ([_]u32{ 1, 7, 4096 }) |budget| {
+        var session = try E.Session.init(a, source, .{ .lowering = .{ .limits = .{ .max_work = limit } } });
+        defer session.deinit();
+        var last: E.Session.Progress = undefined;
+        while (true) {
+            last = session.advance(budget);
+            try expect(last.work_used <= budget);
+            if (last.outcome != null) break;
+        }
+        try equal(@as(E.Error, error.WorkLimit), last.outcome.?.failure);
+        try equal(@as(u64, 0), session.builder.d.b.work.remaining);
+        if (total) |n| try equal(n, last.total_work) else total = last.total_work;
+        if (frontier) |n| try equal(n, last.source_frontier) else frontier = last.source_frontier;
+        try equal(@as(u32, 0), session.advance(4096).work_used);
+        try std.testing.expectError(error.WorkLimit, session.takeResult());
+    }
+}
+
+test "event sessions do not grow a full nesting stack to close a scope" {
+    const E = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } }).FromEvents(dot.Profile(.{ .policy = .{ .execution = .{ .metering = true } } }));
+    for ([_]usize{ 0, 1, 2, 8, 64 }) |depth| {
+        var source: std.Io.Writer.Allocating = .init(a);
+        defer source.deinit();
+        try source.writer.writeAll("digraph{");
+        for (0..depth) |_| try source.writer.writeAll("{");
+        try source.writer.writeAll("a;");
+        for (0..depth) |_| try source.writer.writeAll("}");
+        try source.writer.writeAll("}");
+        var s = try E.Session.init(a, source.written(), .{});
+        defer s.deinit();
+        var peak: usize = 0;
+        while (true) {
+            const p = s.advance(1);
+            peak = @max(peak, s.cursor.core.stack.frames.len);
+            if (p.outcome != null) break;
+        }
+        try equal(depth, peak);
+        var result = try s.takeResult();
+        defer result.deinit();
+        try expect(result.ir() != null);
+    }
+}

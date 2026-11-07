@@ -153,14 +153,23 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
             if (runtime) {
                 if (!self.dot_execution.metering or !self.effective.metering) return error.MeteringDisabled;
             } else if (!Dot.baseline.execution.metering or !baseline.metering) @compileError("composed advance requires metering in both DOT and IR profiles; use run()");
-            return self.drive(budget, true);
+            return if (budget == 1) self.drive(1, true, true) else self.drive(budget, true, false);
         }
         pub fn run(self: *Self) Progress {
             const start = self.total_work;
-            while (self.outcome == null) _ = self.drive(std.math.maxInt(u32), false);
+            while (self.outcome == null) _ = self.drive(std.math.maxInt(u32), false, false);
             return self.snapshot(@intCast(@min(self.total_work - start, std.math.maxInt(u32))));
         }
-        fn drive(self: *Self, budget: u32, pause: bool) Progress {
+        fn drive(self: *Self, budget: u32, pause: bool, comptime single: bool) Progress {
+            // Select once per resume. Interval-one polling cannot batch, so
+            // keep its loop identical in shape to single-credit execution.
+            const fixed_unit = !runtime and dot_cancel and ir_cancel and Dot.baseline.execution.cancellation_interval == 1 and baseline.cancellation_interval == 1;
+            if (single or fixed_unit) return self.driveSelected(budget, pause, single, false);
+            if (runtime and self.dot_execution.cancellation and self.dot_execution.cancellation_interval == 1 and self.effective.cancellation and self.effective.cancellation_interval == 1)
+                return self.driveSelected(budget, pause, false, false);
+            return self.driveSelected(budget, pause, false, true);
+        }
+        fn driveSelected(self: *Self, budget: u32, pause: bool, comptime single: bool, comptime batch: bool) Progress {
             if (self.outcome != null) return self.snapshot(0);
             self.bind();
             self.driving = true;
@@ -170,51 +179,73 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
             }
             var dot_polling: DotPolling = .{};
             var ir_polling: IrPolling = .{};
+            // Safe benefits from exposing the selected unit interval to its
+            // countdown checks. Keep the measured Fast/Small loop shape;
+            // both forms use the same polling state and checkpoints.
+            const unit_interval = @import("builtin").mode == .safe and !batch and !single;
+            const dot_interval = if (unit_interval) 1 else self.dot_execution.cancellation_interval;
+            const ir_interval = if (unit_interval) 1 else self.effective.cancellation_interval;
             // Resume checkpoints are independent of the size of the grant.
             if (!self.poll(true) or !self.poll(false)) return self.snapshot(0);
-            _ = dot_polling.due(self.dot_execution.cancellation_interval);
-            _ = ir_polling.due(self.effective.cancellation_interval);
+            _ = dot_polling.due(dot_interval);
+            _ = ir_polling.due(ir_interval);
             var used: u32 = 0;
             while (used < budget and self.outcome == null) {
+                var spent: u32 = 1;
                 const ir_work = !self.builder.idle();
                 if (ir_work) {
-                    if (ir_polling.due(self.effective.cancellation_interval) and !self.poll(false)) break;
+                    if (ir_polling.due(ir_interval) and !self.poll(false)) break;
                     if (self.builder.d.b.work.remaining == 0) {
                         self.fail(error.WorkLimit);
                         break;
                     }
-                    self.builder.d.b.work.remaining -= 1;
-                    (if (comptime @import("builtin").mode == .small) self.builder.step() else @call(.always_inline, B.step, .{&self.builder})) catch |err| switch (err) {
-                        error.ValidationStopped => {
-                            self.builder.d.failure = err;
-                            self.stopParserFailure(err);
-                            self.rejectValidation();
-                        },
-                        error.UnsupportedSemantics => if (partial and self.result != null) {
-                            self.outcome = .rejected;
-                        } else self.fail(error.UnsupportedSemantics),
-                        else => |failure| self.fail(self.memory.failure(failure)),
-                    };
-                    ir_polling.spend(1);
+                    const available: u32 = if (!batch) 1 else @intCast(@min(budget - used, self.builder.d.b.work.remaining));
+                    const allowance = if (!batch or (ir_cancel and !config.runtime_policy and baseline.cancellation_interval == 1)) 1 else if (ir_cancel) @min(available, ir_polling.allowance()) else available;
+                    if (batch and allowance > 1 and self.builder.hashing()) {
+                        const hashed = self.builder.advanceHash(allowance);
+                        spent = hashed.used;
+                        self.builder.d.b.work.remaining -= spent;
+                        if (hashed.failure) |err| self.fail(err);
+                    } else {
+                        self.builder.d.b.work.remaining -= 1;
+                        (if (comptime @import("builtin").mode == .small) self.builder.step() else @call(.always_inline, B.step, .{&self.builder})) catch |err| switch (err) {
+                            error.ValidationStopped => {
+                                self.builder.d.failure = err;
+                                self.stopParserFailure(err);
+                                self.rejectValidation();
+                            },
+                            error.UnsupportedSemantics => if (partial and self.result != null) {
+                                self.outcome = .rejected;
+                            } else self.fail(error.UnsupportedSemantics),
+                            else => |failure| self.fail(self.memory.failure(failure)),
+                        };
+                    }
+                    ir_polling.spend(spent);
                 } else if (self.parsed() != null) {
                     // Constant-sized admission/ownership decisions are charged.
                     self.finishParsed();
                 } else {
-                    if (dot_polling.due(self.dot_execution.cancellation_interval) and !self.poll(true)) break;
-                    self.stepParser() catch |err| self.fail(self.memory.failure(err));
-                    dot_polling.spend(1);
+                    if (dot_polling.due(dot_interval) and !self.poll(true)) break;
+                    const allowance = if (!batch) 1 else if (dot_cancel) @min(budget - used, dot_polling.allowance()) else budget - used;
+                    const scanned = self.stepParser(allowance) catch |err| failed: {
+                        self.fail(self.memory.failure(err));
+                        break :failed 1;
+                    };
+                    if (batch) spent = scanned;
+                    dot_polling.spend(spent);
                     if (Observer != null) {
                         if (self.sink.failure) |err| self.fail(err) else if (self.sink.stopped) self.fail(error.ObserverStopped);
                     }
                 }
-                used += 1;
-                self.total_work += 1;
+                used += spent;
+                self.total_work += spent;
                 if (self.outcome != null) break;
                 if (self.builder.checked()) self.admit();
                 if (self.builder.done()) {
                     self.result.?._graph = self.builder.publish();
                     self.outcome = .success;
                 }
+                if (single) break;
             }
             if (pause and budget != 0 and self.outcome == null) {
                 if (Dot.runtime_policy) switch (self.cursor) {
@@ -223,18 +254,20 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
             }
             return self.snapshot(used);
         }
-        fn stepParser(self: *Self) r.Error!void {
-            if (Dot.runtime_policy) switch (self.cursor) {
+        inline fn stepParser(self: *Self, allowance: u32) r.Error!u32 {
+            return if (Dot.runtime_policy) switch (self.cursor) {
                 inline else => |*cursor| {
                     self.queue.prior_coverage = cursor.core.machine.control.coverage;
-                    _ = try cursor.step(self.memory.allocator());
+                    const used = try cursor.advance(self.memory.allocator(), allowance);
                     self.frontier = @intCast(cursor.core.machine.tokens.source_frontier);
+                    return used;
                 },
-            } else {
+            } else blk: {
                 self.queue.prior_coverage = self.cursor.core.machine.control.coverage;
-                _ = try self.cursor.step(self.memory.allocator());
+                const used = try self.cursor.advance(self.memory.allocator(), allowance);
                 self.frontier = @intCast(self.cursor.core.machine.tokens.source_frontier);
-            }
+                break :blk used;
+            };
         }
         fn checking(self: *Self, parsed_result: e.ResultFor(true)) API.Checking {
             return .{
@@ -259,6 +292,9 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
         }
         fn finishParsed(self: *Self) void {
             const parsed_result = self.parsed().?;
+            if (Dot.runtime_policy) switch (self.cursor) {
+                inline else => |*cursor| cursor.releaseFrames(self.memory.allocator()),
+            } else self.cursor.releaseFrames(self.memory.allocator());
             self.result = .{ .checking = self.checking(parsed_result) };
             if (parsed_result.outcome == .cancelled) {
                 self.fail(error.Cancelled);

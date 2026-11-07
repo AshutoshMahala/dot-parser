@@ -1538,9 +1538,9 @@ unchanged. One-shot event construction still has no shared resumable grant.
 
 ### Shared-budget event construction
 
-Development measurement on 2026-11-06, at `4a14fdb` plus the slice-3f changes,
-with Zig 0.17.0 on Apple M4 Pro. The existing one-shot routes were also compared
-against a clean build of `4a14fdb`.
+Development measurement on 2026-11-07, comparing `9166857` with the session
+optimization working tree, using Zig 0.17.0 on Apple M4 Pro. Both revisions use
+the same expanded reporter. These results replace the initial slice-3f figures.
 
 ```sh
 zig build bench-ir-event-sessions -Doptimize=fast
@@ -1549,65 +1549,104 @@ zig build bench-ir-event-sessions -Doptimize=small
 ```
 
 The reporter compares one-shot event construction with `Session.run()`, grants
-of 4,096 and grants of 1. Both session profiles enable metering; no cancellation
-hooks or observers are attached in this timing run. Each cell is the median of
-nine samples after two warmups, with route order rotated between samples.
-Times include parsing, checking, graph construction and scratch cleanup; source
+of 4,096 and grants of 1, the block scanner, and cancellation intervals of 1 and
+64 under compile-time and runtime policies. Cancellation rows use grants of
+4,096 and attach a counting hook to both phases. Each report takes nine samples
+after six warmups, rotating route order; the tables below use the median of
+three alternating before/after reports. No observer is attached.
+
+Times include parsing, checking, graph construction and scratch cleanup. Source
 generation and freeing the returned graph are outside the timer. Separate
 untimed runs measure requested allocation peaks and verify retained bytes.
 These are nine small synthetic shapes, not the 14-workload M corpus above.
 
-Fast results, in milliseconds:
+Fast results, in milliseconds; the session columns use the scalar scanner:
 
-| Input | One-shot | Session `run()` | Grant 4,096 | Grant 1 |
+| Input | One-shot now | Previous grant 4,096 | Grant 4,096 now | Change | Grant 1 now |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2,000 edges | 0.231 | 0.857 | 0.635 | −25.8% | 1.591 |
+| 2,000 nodes with attributes | 0.484 | 2.252 | 1.612 | −28.4% | 3.831 |
+| 400 reopened subgraphs | 0.208 | 0.715 | 0.526 | −26.5% | 1.182 |
+| 2,000 nested scopes | 0.184 | 0.459 | 0.401 | −12.7% | 0.759 |
+| Concatenated name with a 64 KiB comment | 0.052 | 0.653 | 0.152 | −76.7% | 0.924 |
+| 5,000 × 5,000 symbolic product | 0.732 | 2.490 | 1.901 | −23.7% | 4.491 |
+| Sparse ports | 0.237 | 0.869 | 0.638 | −26.6% | 1.606 |
+| Dense ports | 0.346 | 1.227 | 0.913 | −25.6% | 2.065 |
+| 1,000 eight-node chains with ports | 0.738 | 2.555 | 1.895 | −25.8% | 4.167 |
+
+Geometric-mean time changes across the nine shapes (negative is faster):
+
+| Session route | Fast | Safe | Small |
+| --- | ---: | ---: | ---: |
+| `run()` | −33.9% | −25.6% | −29.0% |
+| Grant 4,096 | −33.8% | −25.8% | −29.2% |
+| Grant 1 | −8.7% | −6.6% | −16.2% |
+| Block scanner, grant 4,096 | −12.3% | −8.5% | −18.4% |
+| Compile-time cancellation, interval 1 | −0.2% | −3.8% | −11.0% |
+| Compile-time cancellation, interval 64 | −24.3% | −18.4% | −30.1% |
+| Runtime cancellation, interval 1 | +1.0% | +0.9% | −6.1% |
+| Runtime cancellation, interval 64 | −24.3% | −20.2% | −31.3% |
+
+The long-comment case, scalar scanner with grants of 4,096:
+
+| Build | Previous | Now | One-shot now | Session / one-shot now |
 | --- | ---: | ---: | ---: | ---: |
-| 2,000 edges | 0.278 | 0.959 | 0.968 | 2.130 |
-| 2,000 nodes with attributes | 0.455 | 2.056 | 2.058 | 4.149 |
-| 400 reopened subgraphs | 0.199 | 0.634 | 0.633 | 1.323 |
-| 2,000 nested scopes | 0.175 | 0.398 | 0.398 | 0.864 |
-| Concatenated name with a 64 KiB comment | 0.050 | 0.521 | 0.521 | 1.085 |
-| 5,000 × 5,000 symbolic product | 0.707 | 2.219 | 2.211 | 4.886 |
-| Sparse ports | 0.227 | 0.794 | 0.802 | 1.735 |
-| Dense ports | 0.334 | 1.108 | 1.100 | 2.334 |
-| 1,000 eight-node chains with ports | 0.694 | 2.290 | 2.273 | 4.684 |
+| Fast | 0.653 ms | 0.152 ms | 0.052 ms | 2.94× |
+| Safe | 0.654 ms | 0.192 ms | 0.051 ms | 3.73× |
+| Small | 1.108 ms | 0.268 ms | 0.082 ms | 3.27× |
 
-With grants of 4,096, session time is **2.28–4.53× one-shot time in Fast**, except
-for the long-comment case at **10.44×**. The corresponding ranges are
-**1.43–3.27× in Safe** (long comment **10.00×**) and **1.89–3.62× in Small**
-(long comment **9.32×**). Budget 1 adds the cost of returning to and re-entering
-the composed driver for every credit. Larger grants do not restore one-shot
-speed: the driver still alternates bounded parser and IR continuations inside
-each call. The long-comment fixture exposes this per-credit overhead against
-the one-shot scanner's tight byte loop. It is not a claim about Unicode names.
+Previously every scanner/name-hashing credit returned through the full composed
+driver. The new loops execute the same microsteps within the remaining grant,
+polling allowance and IR work limit, stopping at phase changes and event
+handoffs. This removes repeated dispatch without making credits larger. The
+fixture is a comment inside a concatenated name, not a Unicode-name benchmark.
 
-These sessions are an explicit scheduling choice, not a faster replacement for
-`parse`. They preserve single-credit progress through scanning, name comparison,
-sorting, table growth and finalization. The implementation shares name-interning
-and attribute-map continuations with Document lowering. Their phase is selected
-at compile time after the caller dispatches, avoiding a second runtime switch.
-Speed builds inline the IR step; Small retains automatic inlining. Further tuning remains
-possible without changing credit units or cancellation checkpoints.
+Sessions remain an explicit scheduling choice, not a faster replacement for
+`parse`. One-credit grants still return to the caller after each credit, and
+interval-one cancellation cannot batch across polls. The latter has residual
+costs: runtime-policy interval-one results range from −8.0% to +7.8% in Fast
+(the +7.8% case is the long comment), and −4.7% to +4.0% in Safe. The aggregate
+near-flat figures do not establish a win for every enabled configuration.
 
-**Memory.** Final graph bytes match the one-shot route on every fixture.
-Session peaks add 100–340 bytes on eight fixtures. Deep nesting adds 72,440 bytes
-(893,088 → 965,528, **+8.1%**) because nesting growth uses bounded copy storage.
-The inline session occupies 4,816 bytes in Fast/Small and 4,984 in Safe, separate
-from these heap figures. Requested peaks exclude borrowed source, allocator
-metadata and process RSS. No symbolic product is expanded.
+**Memory.** Final graph bytes match the one-shot route on every fixture. For
+2,000 nested scopes, the requested session peak falls from **965,528 to 893,228
+bytes** (−7.5%); one-shot uses 893,088 bytes. The former **+8.1%** overhead is now
+**140 bytes / +0.016%**. Arena reserved capacity for the same input falls from
+3,182,226 to 2,351,978 bytes. The other eight reporter shapes save 100–200 peak
+bytes, leaving 0–140 bytes above one-shot.
 
-**Existing-route gate.** The Document/event comparison executable's machine-code
-section is byte-identical before and after this increment in Fast, Safe and
-Small. Three alternating Fast runs over deep nesting, reopened and strict
-subgraphs, long edge chains, large attribute lists and symbolic products show
-identical allocation counts, retained bytes and requested peaks, with both
-ordinary allocation and an Arena. Ordinary-allocator timing differences span
-−3.12% to +1.92% (geometric mean −0.40%); with identical code these are timing
-noise. This gate covers those existing paths, not every possible consumer link
-layout. A separate Fast comparison of existing Document lowering sessions after
-sharing the helpers preserves all credits, cancellation polls and memory
-figures; route geometric-mean times are −2.64% to −0.55% for session calls and
-−1.48% to +0.58% for direct calls. Session tests separately cover cancellation,
-zero grants, observers, runtime policies, both scanners and partial results.
+The nesting stack now grows only before a recognized opening brace can require
+another frame, uses ordinary DOT's doubling curve, and is released before final
+IR publication. The old 2,000-level case reserved 2,771 frames; this one reserves
+2,048. Copies still advance by at most 64 bytes per credit. Fewer allocations
+and copies change total credits; the unit and polling guarantees are unchanged.
+
+This growth choice is **not a universal memory reduction**. A separate sweep
+at 17 depths from 64 to 20,000, using ordinary allocation and an Arena, includes
+higher session peaks just after growth boundaries: at depth 513, 197,464 becomes
+279,104 bytes; at depth 20,000, 7,674,060 becomes 9,561,488 bytes. Arena reservation
+can move in either direction (at 20,000 it falls from 41,904,438 to 27,634,756).
+Smaller growth experiments did not consistently improve both live and Arena
+memory. These are temporary capacity/copy costs; retained graph bytes do not
+change. `max_bytes` still bounds peak live requested bytes, including old and new
+buffers. It does not bound allocator-internal Arena retention or process RSS.
+
+The inline session remains 4,816 bytes in Fast/Small and 4,984 in Safe, separate
+from heap figures. The nine-route benchmark's machine-code section grows by
+7.0% Fast, 6.2% Safe and 2.3% Small, including its additional bounded-loop
+specializations. This is an opt-in session cost, not a library-wide size claim.
+
+**Default-path gate.** The independent Document/event comparison executable's
+machine-code section is byte-identical before and after in Fast, Safe and Small.
+Its 24 rows (six shapes, two routes, ordinary allocation and Arena) have identical
+retained bytes, requested peaks, Arena capacities/backing peaks and allocation
+counts. No symbolic product is expanded.
+
+Verification includes full tests, freestanding and benchmark builds, plus
+focused Debug/Safe tests for every-credit frontier/diagnostic agreement, both
+scanners, runtime policies, cancellation intervals, reentrant cancellation from
+the polling hook, zero grants, work-limit exhaustion during a hash batch,
+bounded stack copies and closing a scope without growing a full stack.
 
 ### Lowering a Document
 
