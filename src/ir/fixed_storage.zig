@@ -59,6 +59,13 @@ pub const Resource = enum {
     left_entries,
     right_entries,
     scope_memberships,
+    stage_statements,
+    stage_scopes,
+    stage_attributes,
+    stage_links,
+    stage_ports,
+    replay_frames,
+    validation_keys,
 };
 pub const StorageShortfall = struct { resource: Resource, limit: u32, required_at_least: u32 };
 pub const Bounds = struct { graph: GraphCapacities, scratch: LoweringScratchCapacities };
@@ -284,6 +291,16 @@ pub fn For(comptime rep: @import("representation.zig").Identity) type {
             query_allocator: ?std.mem.Allocator,
             shortfall: ?StorageShortfall = null,
             peak: LoweringScratchCapacities = .{},
+
+            /// Event construction has source bytes but no retained Document.
+            pub fn initSource(memory: LoweringMemory, source: []const u8, limits: r.Limits, query_allocator: ?std.mem.Allocator) r.Error!Context {
+                if (!std.meta.eql(memory.graph.capacities, memory.scratch.graph_capacities)) return error.InvalidStorage;
+                const layout = try loweringLayout(memory.graph.capacities, memory.scratch.capacities);
+                const bound = try layout.bind(memory.graph.bytes, memory.scratch.bytes);
+                if (layout.graph_bytes + layout.scratch_bytes > limits.max_bytes) return error.MemoryLimit;
+                try disjoint(bound, source);
+                return .{ .layout = layout, .memory = bound, .query_allocator = query_allocator };
+            }
 
             pub fn init(memory: LoweringMemory, doc: *const syntax.Document, limits: r.Limits, query_allocator: ?std.mem.Allocator) r.Error!Context {
                 if (!std.meta.eql(memory.graph.capacities, memory.scratch.graph_capacities)) return error.InvalidStorage;

@@ -51,6 +51,7 @@ pub fn ConsumerWith(comptime Builder: type, comptime ObserverType: ?type, compti
         undelivered_begin: bool = false,
 
         pub inline fn onEvent(self: *Self, event: e.Event) (Builder.Error || Errors(Observer))!e.Action {
+            if (@hasDecl(Builder, "fixedCheckpoint")) self.builder.fixedCheckpoint();
             if ((!independent or !self.terminal) and (begin or event != .begin_statement)) {
                 // One additional bounded delivery. Callback bodies have the
                 // same caller-owned work contract as standalone DOT events.
@@ -79,6 +80,7 @@ pub fn ConsumerWith(comptime Builder: type, comptime ObserverType: ?type, compti
         }
 
         pub fn onAbort(self: *Self, abort: e.Abort) void {
+            if (@hasDecl(Builder, "fixedCheckpoint")) self.builder.fixedCheckpoint();
             if (!self.terminal and self.started) {
                 if (abort == .document or (tracks_statements and !self.undelivered_begin)) self.observer.onAbort(abort);
                 if (abort == .document) self.terminal = true;

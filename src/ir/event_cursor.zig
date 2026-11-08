@@ -12,23 +12,32 @@ const slices = @import("event_session_storage.zig");
 const enc = @import("parser_support").encoding;
 
 pub fn Cursor(comptime actual: enc.Actual, comptime Dot: type, comptime Sink: type, comptime backend: policy.ScannerBackend) type {
+    return CursorWith(actual, Dot, Sink, backend, void);
+}
+pub fn CursorWith(comptime actual: enc.Actual, comptime Dot: type, comptime Sink: type, comptime backend: policy.ScannerBackend, comptime Context: type) type {
+    const fixed_storage = Context != void;
+    const Memory = if (fixed_storage) *Context else std.mem.Allocator;
     const S = Scratch.For(e.Context(Sink));
     const Core = @import("../dot/event_profile.zig").Core(actual, Sink, if (Dot.runtime_policy) null else Dot.baseline.parsing, if (backend == .scalar) .scalar_metered else .block_metered);
     return struct {
         core: Core,
-        growth: slices.Slice(S.Frame) = .{},
+        growth: if (fixed_storage) void else slices.Slice(S.Frame) = if (fixed_storage) {} else .{},
         maximum: u32,
         pub fn init(source: []const u8, sink: *Sink, diagnostics: dot.DiagnosticSink, settings: policy.ParseSettings, info: enc.Info) @This() {
             return .{ .core = Core.init(source, .{}, sink, diagnostics, .{ .parsing = if (Dot.runtime_policy) settings else {}, .cancellation = {}, .source_info = info }), .maximum = settings.limits.max_nesting };
         }
-        pub fn deinit(self: *@This(), a: std.mem.Allocator) void {
+        pub fn deinit(self: *@This(), a: Memory) void {
+            if (fixed_storage) {
+                self.* = undefined;
+                return;
+            }
             self.growth.deinit(a);
-            store.release(S.Frame, a, self.core.stack.frames);
+            if (!fixed_storage) store.release(S.Frame, a, self.core.stack.frames);
             self.* = undefined;
         }
         /// Scan a bounded run or perform one grammar/event/growth step. Never
         /// cross an event handoff before the composition drains its mailbox.
-        pub inline fn advance(self: *@This(), a: std.mem.Allocator, allowance: u32) r.Error!u32 {
+        pub inline fn advance(self: *@This(), a: Memory, allowance: u32) r.Error!u32 {
             const stack = &self.core.stack;
             const machine = &self.core.machine;
             while (true) {
@@ -40,6 +49,7 @@ pub fn Cursor(comptime actual: enc.Actual, comptime Dot: type, comptime Sink: ty
                     else => false,
                 };
                 if (may_push and stack.len == stack.frames.len and stack.len < self.maximum) {
+                    if (fixed_storage) return a.fail(.nesting_frames, stack.frames.len, @as(usize, stack.len) + 1);
                     // Match ordinary DOT's geometric stack growth. Reserve only
                     // at a possible push, not merely because the stack is full.
                     // Copying still advances in <=64-byte credits.
@@ -49,14 +59,15 @@ pub fn Cursor(comptime actual: enc.Actual, comptime Dot: type, comptime Sink: ty
                 self.core.bind();
                 const used = machine.advanceWork(allowance);
                 self.core.settle();
+                if (fixed_storage) a.observe("nesting", stack.len);
                 if (used != 0 or self.core.terminal != null) return @intCast(@max(1, used));
                 // A cached token can cost zero scanner credits. Recheck nesting
                 // before its grammar transition without charging an extra credit.
             }
         }
-        pub fn releaseFrames(self: *@This(), a: std.mem.Allocator) void {
+        pub fn releaseFrames(self: *@This(), a: Memory) void {
             std.debug.assert(self.core.terminal != null);
-            store.release(S.Frame, a, self.core.stack.frames);
+            if (!fixed_storage) store.release(S.Frame, a, self.core.stack.frames);
             self.core.stack.frames = &.{};
             self.core.stack.len = 0;
         }

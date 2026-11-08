@@ -350,8 +350,134 @@ limited to 64 bytes per credit, and parser frames are freed when parsing ends.
 One-shot and session paths have different speed and peak-memory costs; final
 graph storage is the same. See the [measured session overhead](PERFORMANCE.md#shared-budget-event-construction), or compare them with
 `zig build bench-ir-event-sessions -Doptimize=fast`.
-Fixed event-construction storage and native-encoding event sessions remain future
-work. Existing fixed-storage Document lowering remains available.
+Native-encoding event sessions remain future work.
+
+### Construct events into caller-owned storage
+
+`EventIR.parseIn` and `parsePartialIn` write the same graph types into explicit
+pools. They allocate nothing, copy no source and never fall back to the heap.
+Graph storage comes from `IR`; scratch comes from `EventIR`, which also knows
+about the DOT parser and any observer's saved scope context.
+
+```zig
+const IR = dot.ir.Lowering(.{});
+const EventIR = IR.FromEvents(dot.Profile(.{}));
+const Retained = IR.FixedGraphStorage(.{
+    .nodes = 8, .scopes = 1, .occurrences = 1,
+    .mentions = 16, .connections = 8,
+});
+const Scratch = EventIR.FixedParseScratch(Retained, .{
+    .stage_statements = 1, .stage_scopes = 1, .replay_frames = 1,
+});
+var retained: Retained = .{};
+var scratch: Scratch = .{};
+const result = EventIR.parseIn("digraph { a -> b; b -> c }", .{
+    .graph = retained.storage(), .scratch = scratch.storage(),
+}, .{});
+switch (result.outcome) {
+    .success => {},
+    .rejected => return error.InvalidInput,
+    .failure => |err| return err,
+}
+const graph = result.graph.?;
+// graph borrows retained and source. Scratch can now be reused.
+```
+
+There is no result `deinit()` or owning `ir()` wrapper. Copy the graph value out
+if needed; views borrow that stable value, its retained bytes and the source.
+The caller releases its buffers. A `.lowering.query_allocator` may enable later
+allocating graph operations; construction never uses it.
+
+`FixedOptions` keeps the same `.dot`, `.lowering`, `.diagnostics` and required
+`.observer` options as allocator-backed event construction. The query allocator
+is the only added option. Runtime-policy configurations add `try` to the
+one-shot calls for policy errors. Operational failures are reported in the
+result instead:
+
+| Result member | Meaning |
+| --- | --- |
+| `outcome` | `success`, `rejected`, or `failure` with the binding's typed error |
+| `graph` | Borrowed `Graph` / `PartialGraph` on success only |
+| `checking` | Always present on success/rejection; available on failure when a final DOT summary was reached |
+| `shortfall` | On pool exhaustion: `resource`, `limit`, `required_at_least` |
+| `scratch_peak` | Successful high-water counts plus the selected `partial_bookkeeping` flag; a sizing hint, not a prediction for changed input |
+
+#### Select partial bookkeeping explicitly
+
+`ParseScratchCapacities.partial_bookkeeping` defaults to `false`. Set it to
+`true` when calling `parsePartialIn` or `FixedPartialSession.init`; otherwise
+initialization reports `InvalidStorage` before writing. It reserves extra
+statement/scope recovery records but does not enable partial parsing by itself.
+Complete constructors accept either storage selection and do no partial work.
+Observer recovery remains independent of IR retention.
+
+#### Choose an envelope or measure explicitly
+
+Scratch counts are `u32`, default to zero, and describe simultaneously needed
+records. Flat statements reuse staging space; a giant active statement may
+need space proportional to that statement.
+
+| Scratch capacity | What it reserves |
+| --- | --- |
+| `nesting` | Active DOT nesting frames, including observer scope contexts |
+| `stage_statements`, `stage_scopes` | Active transaction statements and scopes, including the root staging scope |
+| `stage_attributes`, `stage_links`, `stage_ports` | Unreplayed attributes, edge continuations and qualified references |
+| `replay_frames`, `pending_endpoints` | Semantic traversal and pending edge endpoints |
+| `validation_keys` | Duplicate-attribute checking scratch when that check is enabled |
+| `partial_bookkeeping` | Optional recovery records, derived from statement/scope capacities |
+
+Name tables, scope cursors and body-grouping scratch are derived from the graph
+capacities. `parseLayout(graph_capacities, scratch_capacities)` returns checked
+byte sizes and alignment; `layout.bind(graph_bytes, scratch_bytes)` creates the
+same descriptors as the inline storage types. Binding checks capacity
+consistency, alignment, lengths and overlap. Construction also rejects overlap
+with the source. `max_bytes` includes the full graph and scratch reservation,
+including unused space. It excludes caller callback allocations and inline
+operation state.
+
+`try EventIR.parseBounds(counts, options)` is an explicit metadata-only sizing
+option. Pass successful `Dot.measure` / `measureIn` counts and the same fixed
+options as construction. Graph bounds reuse `IR.loweringBounds`; staging bounds
+conservatively cover the whole counted input. No allocation, source walk or
+callback happens in this helper. It returns `{ graph, scratch }` with partial
+bookkeeping off. These bounds can substantially overreserve on flat input;
+observed graph capacities and `scratch_peak` are useful for subsequent parses.
+Reuse scratch counts from the same constructor (one-shot or session); the two
+engines can need different temporary high-water counts.
+The measuring pass has its own cost, and `measureIn` needs caller-chosen nesting
+scratch.
+
+For the same valid input, enabling `bounds.scratch.partial_bookkeeping` also
+permits partial construction. A broken or changed file can stage abandoned
+syntax absent from retained Document counts: choose an explicit envelope or
+retry with larger pools. Retained partial counts are not a bound for that work.
+
+#### Storage failure and fixed sessions
+
+A shortfall is terminal. No graph prefix is published, including on the partial
+route. Already delivered observations and diagnostics remain with the caller.
+Enlarge storage and restart; the report identifies the first shortage, not every
+capacity required by a future run. A semantic limit is checked before the
+capacity needed for the same write. Exact-fit pools succeed.
+
+`FixedSession.init(source, memory, options)` and `FixedPartialSession.init(...)`
+use the same lifecycle and grants as the allocator-backed event sessions above.
+Initialization has no source walk, pool clearing or callbacks. Each table-clear,
+validation and replay step is charged; unused reserved memory is not silently
+initialized in `init`. Hooks and metering remain independently configured in DOT
+and IR. Sessions accept UTF-8/ASCII; fixed one-shot calls also accept enabled
+UTF-16/32 encodings.
+
+`takeResult()` returns the fixed report on success/rejection, or throws the
+latched operational error. `shortfall()` and `scratchPeak()` remain available
+after failure. `peakBytes()` reports the full bound reservation. Keep buffers,
+source and observer alive while paused; session `deinit()` releases no caller
+storage. Neither the memory descriptor nor scratch must outlive a finished graph.
+
+Compare the whole fixed routes, with counting timed separately:
+`zig build bench-ir-fixed-events -Doptimize=fast -- --corpus /path/to/generated`.
+See [measured costs](PERFORMANCE.md#fixed-storage-event-construction). The harness reports exact, bounded and roomy reservations and reuses parser
+scratch for lowering on the Document route where their lifetimes allow it.
 
 ## Nodes, names and subgraphs
 
@@ -2154,7 +2280,7 @@ Measured numbers are in [Performance](PERFORMANCE.md).
 | `capabilities`, `Node`, `Connection`, `Graph`, `PartialGraph` | This profile's choices and types |
 | `parse`, `parsePartial`, `ParseOptions`, `ParseResult`, `PartialResult` | One-call parsing with this profile |
 | `lowerComplete`, `lowerPartial` | Lower a Document |
-| `FromEvents(Dot)` | Bind complete/partial construction and UTF-8/ASCII sessions to a DOT event profile; see [Build from events](#build-from-events) |
+| `FromEvents(Dot)` | Bind complete/partial construction, fixed storage and UTF-8/ASCII sessions to a DOT event profile; see [Build from events](#build-from-events) |
 | `loweringSession`, `partialLoweringSession`, `LoweringSession`, `PartialLoweringSession` | Lower in small steps |
 | `lowerCompleteIn`, `lowerPartialIn`, `FixedLoweringResult`, `FixedPartialLoweringResult` | Fixed-storage lowering |
 | `loweringSessionIn`, `partialLoweringSessionIn`, `FixedLoweringSession`, `FixedPartialLoweringSession` | Fixed-storage lowering in small steps |
@@ -2235,6 +2361,7 @@ Benchmarks (add `-Doptimize=fast`; most also run with `safe` or `small`):
 | `bench-ir-query-indexes` | Index build cost, memory and repeated queries |
 | `bench-ir-partial` | Partial lowering and queries; `-- --attributes-only` for node and scope iteration |
 | `bench-ir-partial-edges` | Partial streaming and folding |
+| `bench-ir-fixed-events` | Whole fixed Document/event construction with exact, bounded and roomy reservations; optional counting timed separately |
 | `bench-ir-fixed` | Fixed lowering: observed capacities, bounds and sessions (sizing and buffer allocation are not timed) |
 | `bench-ir-fixed-queries` | Fixed query scratch: throughput, reservation against use, state sizes |
 | `bench-ir-fixed-materialization` | Fixed materialization: reservations, build and sizing time, session budgets |
@@ -2244,8 +2371,8 @@ Measured results are in [Performance](PERFORMANCE.md).
 
 ## Not available yet
 
-- Native-encoding event sessions and fixed event storage; complete/partial
-  [event construction](#build-from-events), observers and UTF-8/ASCII sessions are available
+- Native-encoding event sessions; complete/partial
+  [event construction](#build-from-events), observers, fixed storage and UTF-8/ASCII sessions are available
 - Checking that a port name exists in a node's label, or binding it to the label
 - Finding a node by name (`findNode`) in small steps
 - Structured `tailPort()`/`headPort()` and value formatting in small steps

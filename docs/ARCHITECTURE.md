@@ -207,12 +207,15 @@ encodings are read.
 | --- | --- |
 | `lower.zig` | Builds the graph from an accepted `Document` in one call |
 | `event_lowering.zig` | Opt-in `IR.FromEvents(Dot).parse`, policy admission, diagnostics and ownership |
+| `event_fixed.zig` | Fixed event options/results and one-shot parser binding |
+| `event_fixed_storage.zig` | Explicit event storage layout, bounds, optional partial bookkeeping and shortfalls |
+| `event_records.zig` | Private transaction records shared by allocator-backed and fixed construction |
 | `event_builder.zig` | Active-statement staging and replay through shared semantic primitives |
 | `event_observer.zig` | Optional typed forwarding, subscription filtering and observer lifecycle |
 | `event_storage.zig` | Private construction pages and checked copying into ordinary contiguous IR pools |
 | `event_validation.zig` | One-shot committed-group and source checks without a Document |
 | `event_session.zig` | Composes DOT and IR under one grant, with typed stops and ownership transfer |
-| `event_cursor.zig` | Bounded parser driver and growing nesting scratch |
+| `event_cursor.zig` | Bounded parser driver with growing or caller-owned nesting scratch |
 | `event_session_builder.zig` | Resumable staging, replay, partial coverage and publication |
 | `event_session_storage.zig` | Bounded growth and compaction of event storage |
 | `event_validation_session.zig` | Resumable duplicate/catalog and encoding checks |

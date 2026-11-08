@@ -30,8 +30,8 @@ optional indexes and adjacency. Still to do:
   a value (`tailport`, `headport`).
 - **More event-based graph construction.** `IR.FromEvents(Dot).parse` and
   `parsePartial` are available without a retained Document, with optional
-  observer forwarding and UTF-8/ASCII shared-budget sessions. Native sessions and
-  fixed event storage remain.
+  observer forwarding, fixed storage and UTF-8/ASCII shared-budget sessions.
+  Native sessions remain.
 - **One budget for Document construction followed by lowering.** Those two
   operations still have separate steps; event-based sessions already share a
   grant across parsing, checking and graph construction.

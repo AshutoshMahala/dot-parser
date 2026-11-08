@@ -11,9 +11,13 @@ const forwarding = @import("event_observer.zig");
 pub const Phase = enum { parse, stage, validate, replay, finalize, terminal };
 
 pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config, comptime Dot: type, comptime Observer: ?type, comptime partial: bool) type {
+    return SessionWith(API, config, Dot, Observer, partial, void);
+}
+pub fn SessionWith(comptime API: type, comptime config: @import("../ir.zig").Config, comptime Dot: type, comptime Observer: ?type, comptime partial: bool, comptime Context: type) type {
+    const fixed_storage = Context != void;
     const rep = @import("representation.zig").Identity.from(config);
     const baseline = comptime execution.resolve(.{}, config.policy);
-    const B = @import("event_session_builder.zig").Builder(rep, if (Dot.runtime_policy) null else Dot.baseline.validation, partial);
+    const B = @import("event_session_builder.zig").BuilderWith(rep, if (Dot.runtime_policy) null else Dot.baseline.validation, partial, Context);
     const Queue = struct {
         pub const retains_partial = partial;
         pub const wants_begin_statement = true;
@@ -36,8 +40,8 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
     const Sink = forwarding.ConsumerWith(Queue, Observer, true);
     const actual: enc.Actual = if (Dot.source_capabilities.utf8) .utf8 else .ascii;
     const Cursor = @import("event_cursor.zig");
-    const Scalar = Cursor.Cursor(actual, Dot, Sink, .scalar);
-    const Block = Cursor.Cursor(actual, Dot, Sink, .block);
+    const Scalar = Cursor.CursorWith(actual, Dot, Sink, .scalar, Context);
+    const Block = Cursor.CursorWith(actual, Dot, Sink, .block, Context);
     const Cursors = union(policy.ScannerBackend) { scalar: Scalar, block: Block };
     const runtime = config.runtime_policy or Dot.runtime_policy;
     const dot_cancel = Dot.runtime_policy or Dot.baseline.execution.cancellation;
@@ -47,12 +51,12 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
     const IrPolling = Poll(ir_cancel, if (config.runtime_policy) null else baseline.cancellation_interval);
     return struct {
         const Self = @This();
-        pub const Result = if (partial) API.PartialResult else API.Result;
-        pub const Options = API.Options;
+        pub const Result = if (fixed_storage) (if (partial) API.FixedPartialResult else API.FixedResult) else if (partial) API.PartialResult else API.Result;
+        pub const Options = if (fixed_storage) API.FixedOptions else API.Options;
         pub const Outcome = union(enum) { success, rejected, failure: API.Error };
         pub const Progress = struct { work_used: u32, total_work: u64, phase: Phase, source_frontier: u32, outcome: ?Outcome };
         pub const TakeError = API.Error || error{ NotReady, AlreadyTaken };
-        memory: r.Memory,
+        memory: if (fixed_storage) Context else r.Memory,
         builder: B,
         queue: Queue = .{},
         sink: if (Observer != null) Sink else void,
@@ -69,16 +73,18 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
         cancelled: bool = false,
         driving: bool = false,
 
-        pub fn init(allocator: std.mem.Allocator, source: []const u8, options: Options) API.Error!Self {
+        pub fn init(first: if (fixed_storage) []const u8 else std.mem.Allocator, second: if (fixed_storage) API.ParseMemory else []const u8, options: Options) API.Error!Self {
+            const source = if (fixed_storage) first else second;
             const settings = if (Dot.runtime_policy) try Dot.Policies.prepare(.{ .policy = options.dot.policy }) else Dot.baseline;
             const effective = if (config.runtime_policy) try execution.effectiveFor(config, options.lowering) else baseline;
             const limits = options.lowering.limits orelse config.limits;
             const info = if (@hasField(@TypeOf(options.dot), "encoding")) try enc.select(Dot.source_capabilities, source, options.dot.encoding) else enc.Reader(actual).sourceInfo(source);
             if (info.encoding != .utf8 and info.encoding != .ascii) return error.UnsupportedEncoding;
             if (!rep.encodings.allows(if (info.encoding == .ascii and !rep.encodings.utf8) .ascii else .utf8)) return error.UnsupportedEncoding;
+            var memory = if (fixed_storage) try Context.init(second, source, limits, options.lowering.query_allocator, partial) else r.Memory{ .backing = first, .limit = limits.max_bytes };
             var value: Self = .{
-                .memory = .{ .backing = allocator, .limit = limits.max_bytes },
-                .builder = try B.init(allocator, source, info, limits, settings.validation, options.diagnostics),
+                .memory = memory,
+                .builder = try B.init(if (fixed_storage) &memory else first, source, info, limits, settings.validation, options.diagnostics),
                 .sink = if (Observer != null) .{ .builder = undefined, .observer = options.observer } else {},
                 .cursor = undefined,
                 .dot_execution = settings.execution,
@@ -91,11 +97,25 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
                 .scalar => .{ .scalar = Scalar.init(source, undefined, options.diagnostics, settings.parsing, info) },
                 .block => .{ .block = Block.init(source, undefined, options.diagnostics, settings.parsing, info) },
             } else value.cursor = @TypeOf(value.cursor).init(source, undefined, options.diagnostics, settings.parsing, info);
+            if (fixed_storage) {
+                if (Dot.runtime_policy) switch (value.cursor) {
+                    inline else => |*cursor| cursor.core.stack.frames = memory.frames(e.Context(Sink)),
+                } else value.cursor.core.stack.frames = memory.frames(e.Context(Sink));
+            }
             // No allocation, source walk or callback has happened here.
             return value;
         }
+        inline fn memoryHandle(self: *Self) if (fixed_storage) *Context else std.mem.Allocator {
+            return if (fixed_storage) &self.memory else self.memory.allocator();
+        }
+        fn memoryFailure(self: *Self, err: r.Error) r.Error {
+            return if (fixed_storage) err else self.memory.failure(err);
+        }
+        fn checkedResult(self: *Self) *API.Checking {
+            return if (fixed_storage) &self.result.?.checking.? else &self.result.?.checking;
+        }
         fn bind(self: *Self) void {
-            self.builder.bind(self.memory.allocator());
+            self.builder.bind(self.memoryHandle());
             self.queue.builder = &self.builder;
             self.queue.cancelled = &self.cancelled;
             const sink = if (Observer != null) blk: {
@@ -183,6 +203,10 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
             // countdown checks. Keep the measured Fast/Small loop shape;
             // both forms use the same polling state and checkpoints.
             const unit_interval = @import("builtin").mode == .safe and !batch and !single;
+            // Small's block specialization needs the semantic step in this
+            // loop to avoid the measured handoff regression. Keep scalar and
+            // runtime-selected Small sessions outlined to limit code size.
+            const outline_step = @import("builtin").mode == .small and (Dot.runtime_policy or Dot.baseline.scanner != .block);
             const dot_interval = if (unit_interval) 1 else self.dot_execution.cancellation_interval;
             const ir_interval = if (unit_interval) 1 else self.effective.cancellation_interval;
             // Resume checkpoints are independent of the size of the grant.
@@ -208,7 +232,7 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
                         if (hashed.failure) |err| self.fail(err);
                     } else {
                         self.builder.d.b.work.remaining -= 1;
-                        (if (comptime @import("builtin").mode == .small) self.builder.step() else @call(.always_inline, B.step, .{&self.builder})) catch |err| switch (err) {
+                        (if (comptime outline_step) self.builder.step() else @call(.always_inline, B.step, .{&self.builder})) catch |err| switch (err) {
                             error.ValidationStopped => {
                                 self.builder.d.failure = err;
                                 self.stopParserFailure(err);
@@ -217,7 +241,7 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
                             error.UnsupportedSemantics => if (partial and self.result != null) {
                                 self.outcome = .rejected;
                             } else self.fail(error.UnsupportedSemantics),
-                            else => |failure| self.fail(self.memory.failure(failure)),
+                            else => |failure| self.fail(self.memoryFailure(failure)),
                         };
                     }
                     ir_polling.spend(spent);
@@ -228,7 +252,7 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
                     if (dot_polling.due(dot_interval) and !self.poll(true)) break;
                     const allowance = if (!batch) 1 else if (dot_cancel) @min(budget - used, dot_polling.allowance()) else budget - used;
                     const scanned = self.stepParser(allowance) catch |err| failed: {
-                        self.fail(self.memory.failure(err));
+                        self.fail(self.memoryFailure(err));
                         break :failed 1;
                     };
                     if (batch) spent = scanned;
@@ -242,7 +266,7 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
                 if (self.outcome != null) break;
                 if (self.builder.checked()) self.admit();
                 if (self.builder.done()) {
-                    self.result.?._graph = self.builder.publish();
+                    if (fixed_storage) self.result.?.graph = self.builder.publish() else self.result.?._graph = self.builder.publish();
                     self.outcome = .success;
                 }
                 if (single) break;
@@ -258,13 +282,13 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
             return if (Dot.runtime_policy) switch (self.cursor) {
                 inline else => |*cursor| {
                     self.queue.prior_coverage = cursor.core.machine.control.coverage;
-                    const used = try cursor.advance(self.memory.allocator(), allowance);
+                    const used = try cursor.advance(self.memoryHandle(), allowance);
                     self.frontier = @intCast(cursor.core.machine.tokens.source_frontier);
                     return used;
                 },
             } else blk: {
                 self.queue.prior_coverage = self.cursor.core.machine.control.coverage;
-                const used = try self.cursor.advance(self.memory.allocator(), allowance);
+                const used = try self.cursor.advance(self.memoryHandle(), allowance);
                 self.frontier = @intCast(self.cursor.core.machine.tokens.source_frontier);
                 break :blk used;
             };
@@ -293,8 +317,8 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
         fn finishParsed(self: *Self) void {
             const parsed_result = self.parsed().?;
             if (Dot.runtime_policy) switch (self.cursor) {
-                inline else => |*cursor| cursor.releaseFrames(self.memory.allocator()),
-            } else self.cursor.releaseFrames(self.memory.allocator());
+                inline else => |*cursor| cursor.releaseFrames(self.memoryHandle()),
+            } else self.cursor.releaseFrames(self.memoryHandle());
             self.result = .{ .checking = self.checking(parsed_result) };
             if (parsed_result.outcome == .cancelled) {
                 self.fail(error.Cancelled);
@@ -305,7 +329,7 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
                 else => false,
             } else parsed_result.outcome == .success;
             if (!admissible or parsed_result.diagnostic_stop != null or parsed_result.diagnostic_delivery != .complete) {
-                self.result.?.checking.warnings += self.builder.d.checker.warnings;
+                self.checkedResult().warnings += self.builder.d.checker.warnings;
                 self.outcome = .rejected;
                 return;
             }
@@ -317,21 +341,21 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
                 self.result = .{ .checking = self.checking(self.parsed().?) };
                 // Semantic consumption can reject after the parser handed off
                 // a commit. Keep the same accepted frontier as direct events.
-                self.result.?.checking.coverage = self.queue.prior_coverage;
+                self.checkedResult().coverage = self.queue.prior_coverage;
             }
             self.recordValidation(false);
             self.outcome = .rejected;
         }
         fn recordValidation(self: *Self, coverage: bool) void {
             const checker = &self.builder.d.checker;
-            self.result.?.checking.validation = if (coverage) self.builder.d.validation(self.parsed().?.outcome == .success, self.parsed().?.coverage.retained_end) else checker.result();
-            self.result.?.checking.warnings += checker.warnings;
-            self.result.?.checking.diagnostic_delivery = checker.delivery;
-            self.result.?.checking.diagnostic_stop = checker.stop;
+            self.checkedResult().validation = if (coverage) self.builder.d.validation(self.parsed().?.outcome == .success, self.parsed().?.coverage.retained_end) else checker.result();
+            self.checkedResult().warnings += checker.warnings;
+            self.checkedResult().diagnostic_delivery = checker.delivery;
+            self.checkedResult().diagnostic_stop = checker.stop;
         }
         fn admit(self: *Self) void {
             self.recordValidation(true);
-            const validation = self.result.?.checking.validation.?;
+            const validation = self.checkedResult().validation.?;
             const allowed = if (partial) validation.outcome == .completed and (!self.builder.d.header.strict or validation.outcome.completed.violations == 0) else validation.documentValid();
             if (!allowed) {
                 self.outcome = .rejected;
@@ -348,20 +372,38 @@ pub fn Session(comptime API: type, comptime config: @import("../ir.zig").Config,
             if (outcome == .failure) return outcome.failure;
             if (self.taken) return error.AlreadyTaken;
             self.taken = true;
-            const result = self.result.?;
+            var result = self.result.?;
+            if (fixed_storage) {
+                result.outcome = switch (outcome) {
+                    .success => .success,
+                    .rejected => .rejected,
+                    .failure => unreachable,
+                };
+                result.scratch_peak = self.memory.scratchPeak();
+            }
             self.result = null;
             return result;
         }
+        pub fn shortfall(self: *const Self) ?@import("fixed_storage.zig").StorageShortfall {
+            if (!fixed_storage) @compileError("shortfall requires fixed event storage");
+            return self.memory.shortfall();
+        }
+        pub fn scratchPeak(self: *const Self) API.ParseScratchCapacities {
+            if (!fixed_storage) @compileError("scratchPeak requires fixed event storage");
+            return self.memory.scratchPeak();
+        }
         pub fn peakBytes(self: *const Self) usize {
-            return self.memory.peak;
+            return if (fixed_storage) self.memory.layout.graph_bytes + self.memory.layout.scratch_bytes else self.memory.peak;
         }
         pub fn deinit(self: *Self) void {
             self.bind();
             if (self.outcome == null) self.cancel();
-            if (self.result) |*result| result.deinit();
+            if (!fixed_storage) {
+                if (self.result) |*result| result.deinit();
+            }
             if (Dot.runtime_policy) switch (self.cursor) {
-                inline else => |*cursor| cursor.deinit(self.memory.allocator()),
-            } else self.cursor.deinit(self.memory.allocator());
+                inline else => |*cursor| cursor.deinit(self.memoryHandle()),
+            } else self.cursor.deinit(self.memoryHandle());
             self.builder.deinit();
             self.* = undefined;
         }

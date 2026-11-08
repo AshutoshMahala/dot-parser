@@ -7,6 +7,21 @@ pub fn Pages(comptime T: type) type {
     return WithPageCapacity(T, 16 * 1024);
 }
 
+pub fn PagesFor(comptime T: type, comptime fixed: bool, comptime field: []const u8) type {
+    if (!fixed) return Pages(T);
+    return struct {
+        base: u32 = 0,
+        pub fn deinit(_: *@This(), _: anytype) void {}
+        pub fn ensure(_: *@This(), a: anytype, _: *r.Work, current: *[]T, written: u32, _: u32) r.Error!void {
+            try a.ensure(field, @as(usize, written) + 1);
+            current.* = a.slice(field);
+        }
+        pub fn finish(_: *@This(), _: anytype, _: *r.Work, current: *[]T, written: u32) r.Error!void {
+            current.* = current.*[0..written];
+        }
+    };
+}
+
 fn WithPageCapacity(comptime T: type, comptime page_capacity: u32) type {
     return struct {
         const Self = @This();

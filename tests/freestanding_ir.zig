@@ -528,3 +528,40 @@ export fn resumable_event_ir(source: [*]const u8, length: u32, memory: [*]u8, ca
     const graph = result.ir() orelse return 0;
     return @intCast(graph._data.nodes.len);
 }
+
+// Event construction borrows explicit pools and does not need even a buffer
+// allocator. Source measurement below is an optional explicit sizing exercise.
+export fn fixed_event_ir(source: [*]const u8, length: u32, stepped: bool, partial: bool) u32 {
+    const D = dot.Profile(.{ .policy = .{ .execution = .{ .metering = true } } });
+    const IR = dot.ir.Lowering(.{ .policy = .{ .execution = .{ .metering = true } } });
+    const E = IR.FromEvents(D);
+    const Retained = IR.FixedGraphStorage(.{ .nodes = 32, .scopes = 8, .occurrences = 16, .mentions = 128, .connections = 64, .endpoint_ports = 32, .attributes = 128, .attribute_keys = 32, .attribute_states = 1024, .declarations = 64, .coverage_gaps = 32 });
+    const Scratch = E.FixedParseScratch(Retained, .{ .nesting = 8, .stage_statements = 64, .stage_scopes = 16, .stage_attributes = 128, .stage_links = 64, .stage_ports = 32, .replay_frames = 64, .pending_endpoints = 64, .validation_keys = 128, .partial_bookkeeping = true });
+    var retained: Retained = .{};
+    var scratch: Scratch = .{};
+    const memory: E.ParseMemory = .{ .graph = retained.storage(), .scratch = scratch.storage() };
+    if (partial) {
+        if (stepped) {
+            var session = E.FixedPartialSession.init(source[0..length], memory, .{}) catch return 0;
+            defer session.deinit();
+            while (session.advance(7).outcome == null) {}
+            const result = session.takeResult() catch return 0;
+            return if (result.graph) |graph| graph.nodeCount() else 0;
+        }
+        const result = E.parsePartialIn(source[0..length], memory, .{});
+        return if (result.graph) |graph| graph.nodeCount() else 0;
+    }
+    var parser: dot.FixedParseScratch(.{ .nesting = 8 }) = .{};
+    const counted = D.measureIn(source[0..length], parser.storage(), dot.diagnostic.discard, .{});
+    const bounds = E.parseBounds(counted.capacities orelse return 0, .{}) catch return 0;
+    if (bounds.graph.nodes > 32) return 0;
+    if (stepped) {
+        var session = E.FixedSession.init(source[0..length], memory, .{}) catch return 0;
+        defer session.deinit();
+        while (session.advance(7).outcome == null) {}
+        const result = session.takeResult() catch return 0;
+        return if (result.graph) |graph| @intCast(graph.nodes.len) else 0;
+    }
+    const result = E.parseIn(source[0..length], memory, .{});
+    return if (result.graph) |graph| @intCast(graph.nodes.len) else 0;
+}

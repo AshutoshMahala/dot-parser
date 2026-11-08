@@ -733,6 +733,17 @@ pub fn build(b: *std.Build) void {
     run_ir_events.has_side_effects = true;
     b.step("bench-ir-events", "Compare Document and event IR time, live peaks and Arena capacity (CSV)").dependOn(&run_ir_events.step);
     check_benches.dependOn(&ir_events.step);
+    const ir_fixed_events = b.addExecutable(.{ .name = "ir_fixed_events", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/ir_fixed_events.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "dot_parser", .module = mod }},
+    }) });
+    const run_ir_fixed_events = b.addRunArtifact(ir_fixed_events);
+    run_ir_fixed_events.addPassthruArgs();
+    run_ir_fixed_events.has_side_effects = true;
+    b.step("bench-ir-fixed-events", "Compare fixed Document and event IR routes with explicit sizing (CSV)").dependOn(&run_ir_fixed_events.step);
+    check_benches.dependOn(&ir_fixed_events.step);
     const ir_event_sessions = b.addExecutable(.{ .name = "ir_event_sessions", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/ir_event_sessions.zig"),
         .target = target,

@@ -48,6 +48,12 @@ statements after an error, too.
     Observer recovery is independent: ending an observer's delivery after a
     syntax error does not disable IR retention. Explicit observer stops/errors
     and operational failures still prevent publication.
+  - **Fixed storage for event construction.** `parseIn` / `parsePartialIn` and
+    `FixedSession` / `FixedPartialSession` use caller-owned graph and scratch
+    pools. Bounds are explicit (`parseBounds`); partial recovery bookkeeping
+    is optional. Exact-fit storage succeeds, shortages report their resource
+    and publish no graph, and construction never uses a query allocator.
+    `bench-ir-fixed-events` compares the whole fixed Document/event routes.
   - **Resumable construction from events.** `EventIR.Session` and
     `PartialSession` share a grant across DOT, validation and IR construction,
     with no hidden Document or measuring pass. They preserve observer forwarding,

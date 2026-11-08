@@ -15,34 +15,15 @@ const indexes = @import("query_indexes.zig");
 const storage = @import("event_storage.zig");
 const none = std.math.maxInt(u32);
 const Span = @import("parser_support").location.Span;
-const Endpoint = union(enum) { node: syntax.NodeReferenceView, scope: u32 };
-const Link = struct { right: Endpoint, operator: syntax.EdgeOperator, span: Span, next: u32 = none };
-const Statement = struct {
-    occurrence: u32,
-    next: u32 = none,
-    attributes: syntax.AttributeRange = .{},
-    first_link: u32 = none,
-    last_link: u32 = none,
-    value: union(enum) { pending, node: e.Node, edge: e.Edge, scoped_edge: e.Edge, scope: u32, assignment: syntax.Attribute, defaults: syntax.AttributeTarget } = .pending,
-};
-const Scope = struct { occurrence: u32, first: u32 = none, last: u32 = none, active: u32 = none, parent: u32 = 0 };
-const Replay = union(enum) {
-    scope: struct { scope: u32, statement: u32 },
-    statement: u32,
-    edge: struct { statement: u32, phase: u32 = 0, link: u32, pending: u32 },
-};
+const records = @import("event_records.zig");
+const Endpoint = records.Endpoint;
+const Link = records.Link;
+const Statement = records.Statement;
+const Scope = records.Scope;
+const Replay = records.Replay;
 const PartialState = struct {
-    const StatementState = struct {
-        first_child: u32 = none,
-        last_child: u32 = none,
-        gap: ?Span = null,
-        // Promoted scoped-edge prefixes survive in a partial Document for
-        // validation only. They never become graph connections or mentions.
-        prefix: bool = false,
-        committed: bool = false,
-        certified_end: u32 = 0,
-    };
-    const ScopeState = struct { next: u32 = none, closed: bool = false };
+    const StatementState = records.PartialStatement;
+    const ScopeState = records.PartialScope;
     statements: std.ArrayList(StatementState) = .empty,
     scopes: std.ArrayList(ScopeState) = .empty,
 
@@ -58,6 +39,11 @@ const PartialState = struct {
 };
 
 pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representation.zig").Identity, comptime fixed: ?policy.ValidationSettings, comptime partial: bool) type {
+    return BuilderWith(actual, rep, fixed, partial, void);
+}
+pub fn BuilderWith(comptime actual: enc.Actual, comptime rep: @import("representation.zig").Identity, comptime fixed: ?policy.ValidationSettings, comptime partial: bool, comptime Context: type) type {
+    const fixed_storage = Context != void;
+    const Memory = if (fixed_storage) *Context else std.mem.Allocator;
     return struct {
         const Self = @This();
         pub const retains_partial = partial;
@@ -67,7 +53,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         pub const Error = r.Error || v.Stop;
         const ReplayError = if (partial) Error else r.Error;
         header: lower.Header,
-        b: lower.EventBuilder(actual, rep, partial),
+        b: if (fixed_storage) lower.EventBuilderIn(actual, rep, partial, Context) else lower.EventBuilder(actual, rep, partial),
         checker: v.Checker(actual, fixed),
         keyword: Span = .{ .start = 0, .len = 0 },
         statements: std.ArrayList(Statement) = .empty,
@@ -76,8 +62,8 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         stage_links: std.ArrayList(Link) = .empty,
         stage_ports: std.ArrayList(syntax.NodeReferenceView) = .empty,
         replay: std.ArrayList(Replay) = .empty,
-        mention_pages: storage.Pages(t.Mention) = .{},
-        connection_pages: storage.Pages(t.ConnectionFor(rep.attributes)) = .{},
+        mention_pages: storage.PagesFor(t.Mention, fixed_storage, "mentions") = .{},
+        connection_pages: storage.PagesFor(t.ConnectionFor(rep.attributes), fixed_storage, "connections") = .{},
         current: u32 = 0,
         scope_base: u32 = 1,
         reference_base: u32 = 0,
@@ -90,10 +76,24 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         connection_bound: u32 = std.math.maxInt(u32),
         attribute_bound: u32 = std.math.maxInt(u32),
 
-        pub fn init(a: std.mem.Allocator, source: []const u8, info: enc.Info, limits: r.Limits, hook: ?r.Cancellation, settings: policy.ValidationSettings, sink: @import("../dot/diagnostic.zig").Sink) r.Error!Self {
-            return .{ .header = .{ .source = source, .source_info = info, .kind = .digraph, .strict = false, .name = null }, .b = .{ .a = a, .doc = undefined, .limits = limits, .interpretation = undefined, .work = try r.Work.init(limits, hook) }, .checker = .{ .source = source, .runtime_settings = if (fixed == null) settings else {}, .sink = sink } };
+        pub fn init(a: Memory, source: []const u8, info: enc.Info, limits: r.Limits, hook: ?r.Cancellation, settings: policy.ValidationSettings, sink: @import("../dot/diagnostic.zig").Sink) r.Error!Self {
+            var value: Self = .{ .header = .{ .source = source, .source_info = info, .kind = .digraph, .strict = false, .name = null }, .b = .{ .a = a, .doc = undefined, .limits = limits, .interpretation = undefined, .work = try r.Work.init(limits, hook) }, .checker = .{ .source = source, .runtime_settings = if (fixed == null) settings else {}, .sink = sink } };
+            if (fixed_storage) value.bindFixed();
+            return value;
+        }
+        pub fn bindFixed(self: *Self) void {
+            const a = self.b.a;
+            self.b.bindFixed(a);
+            inline for (.{ "statements", "stage_scopes", "stage_attributes", "stage_links", "stage_ports", "replay" }) |field| @field(self, field) = a.list(field);
+            self.checker.entries = a.list("validation_keys");
+            if (partial) {
+                self.aborted.statements = a.list("partial_statements");
+                self.aborted.scopes = a.list("partial_scopes");
+            }
         }
         pub fn deinit(self: *Self) void {
+            if (fixed_storage) return;
+
             if (partial) self.aborted.deinit(self.b.a);
             self.checker.deinit(self.b.a);
             self.mention_pages.deinit(self.b.a);
@@ -104,17 +104,28 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         inline fn spend(self: *Self, count: u64) r.Error!void {
             return @call(.always_inline, r.Work.spend, .{ &self.b.work, count });
         }
-        fn append(self: *Self, list: anytype, value: std.meta.Elem(@TypeOf(list.items))) r.Error!u32 {
+        fn append(self: *Self, comptime field: []const u8, list: anytype, value: std.meta.Elem(@TypeOf(list.items))) r.Error!u32 {
             try self.spend(1);
             const id = try r.index(list.items.len);
             if (list.items.len == list.capacity) try self.spend(list.items.len);
-            try list.append(self.b.a, value);
+            if (fixed_storage) {
+                try self.b.a.ensure(field, list.items.len + 1);
+                list.appendAssumeCapacity(value);
+                self.b.a.observe(field, list.items.len);
+            } else try list.append(self.b.a, value);
+
             return id;
         }
         /// Slices store their allocation lengths during construction. Counters
         /// bound initialized records; publication compacts them to exact slices.
-        inline fn reserve(self: *Self, comptime T: type, slice: *[]T, need: usize, maximum: usize) r.Error!void {
+        inline fn reserve(self: *Self, comptime field: []const u8, comptime T: type, slice: *[]T, need: usize, maximum: usize) r.Error!void {
+            if (fixed_storage) {
+                try self.b.a.ensure(field, need);
+                slice.* = self.b.a.slice(field)[0..need];
+                return;
+            }
             if (need <= slice.len) return;
+
             return self.grow(T, slice, need, maximum);
         }
         noinline fn grow(self: *Self, comptime T: type, slice: *[]T, need: usize, maximum: usize) r.Error!void {
@@ -125,6 +136,10 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             slice.* = try self.b.a.realloc(slice.*, capacity);
         }
         fn compact(self: *Self, comptime T: type, slice: *[]T, count: usize) r.Error!void {
+            if (fixed_storage) {
+                slice.* = slice.*[0..count];
+                return;
+            }
             if (slice.len == count) return;
             try self.spend(count);
             slice.* = try self.b.a.realloc(slice.*, count);
@@ -143,7 +158,11 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             self.scope_base = self.occurrence_count;
             self.reference_base = self.next_reference;
         }
+        pub inline fn fixedCheckpoint(self: *Self) void {
+            if (fixed_storage) if (self.b.a.nesting_depth) |depth| self.b.a.observe("nesting", depth.*);
+        }
         pub inline fn onEvent(self: *Self, event: e.Event) Error!e.Action {
+            self.fixedCheckpoint();
             self.b.doc = &self.header;
             return self.consume(event) catch |err| {
                 self.failure = err;
@@ -151,6 +170,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             };
         }
         pub fn onAbort(self: *Self, _: e.Abort) void {
+            self.fixedCheckpoint();
             // Complete-only construction never publishes recovered syntax as a
             // complete graph. The parser may continue delivering diagnostics.
             if (!partial) self.aborted = true;
@@ -189,9 +209,9 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                 .begin_scope => |d| {
                     const occurrence = try self.addScope(@backingInt(d.parent), d.id, if (d.name) |name| name.span() else null, d.start);
                     if (d.role == .link) try self.link(.{ .scope = occurrence }, convertOperator(d.link_operator.?), d.link_operator_span.?);
-                    const child = try self.append(&self.stage_scopes, .{ .occurrence = occurrence, .parent = self.current });
+                    const child = try self.append("stage_scopes", &self.stage_scopes, .{ .occurrence = occurrence, .parent = self.current });
                     if (partial) {
-                        _ = try self.append(&self.aborted.scopes, .{});
+                        _ = try self.append("partial_scopes", &self.aborted.scopes, .{});
                         const owner = &self.aborted.statements.items[self.active()];
                         if (!owner.prefix) if (d.edge) |prefix| {
                             self.statements.items[self.active()].value = .{ .edge = prefix };
@@ -212,14 +232,14 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                     if (partial) self.aborted.statements.items[self.active()].certified_end = @intCast(d.close.endOffset());
                 },
                 .attribute => |d| {
-                    const index = try self.append(&self.stage_attributes, attr(d.pair));
+                    const index = try self.append("stage_attributes", &self.stage_attributes, attr(d.pair));
                     const s = &self.statements.items[self.active()];
                     if (s.attributes.len == 0) s.attributes.start = index;
                     s.attributes.len += 1;
                 },
                 .ported_reference => |d| {
                     if (@backingInt(d.id) != self.next_reference) return error.InvalidDocument;
-                    _ = try self.append(&self.stage_ports, .{ .identifier = d.reference.identifier.span(), .port = .{ .first = d.reference.first.span(), .second = if (d.reference.second) |n| n.span() else null } });
+                    _ = try self.append("stage_ports", &self.stage_ports, .{ .identifier = d.reference.identifier.span(), .port = .{ .first = d.reference.first.span(), .second = if (d.reference.second) |n| n.span() else null } });
                     self.next_reference += 1;
                 },
                 .edge_link => |d| try self.link(.{ .node = try self.reference(d.link.right.span(), d.link.right_port) }, convertOperator(d.link.operator), d.link.operator_span),
@@ -268,11 +288,11 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         }
         inline fn beginStatement(self: *Self, occurrence: u32) r.Error!u32 {
             if (self.stage_scopes.items.len == 0) {
-                _ = try self.append(&self.stage_scopes, .{ .occurrence = 0 });
-                if (partial) _ = try self.append(&self.aborted.scopes, .{});
+                _ = try self.append("stage_scopes", &self.stage_scopes, .{ .occurrence = 0 });
+                if (partial) _ = try self.append("partial_scopes", &self.aborted.scopes, .{});
             }
-            const id = try self.append(&self.statements, .{ .occurrence = occurrence });
-            if (partial) _ = try self.append(&self.aborted.statements, .{});
+            const id = try self.append("statements", &self.statements, .{ .occurrence = occurrence });
+            if (partial) _ = try self.append("partial_statements", &self.aborted.statements, .{});
             const scope = &self.stage_scopes.items[self.current];
             if (scope.last != none) self.statements.items[scope.last].next = id else scope.first = id;
             scope.last = id;
@@ -280,7 +300,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             return id;
         }
         fn link(self: *Self, right: Endpoint, op: syntax.EdgeOperator, span: Span) r.Error!void {
-            const id = try self.append(&self.stage_links, .{ .right = right, .operator = op, .span = span });
+            const id = try self.append("stage_links", &self.stage_links, .{ .right = right, .operator = op, .span = span });
             const statement = &self.statements.items[self.active()];
             if (statement.last_link != none) self.stage_links.items[statement.last_link].next = id else statement.first_link = id;
             statement.last_link = id;
@@ -382,18 +402,18 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                     };
                     try @import("lowering_storage.zig").prepareTable(&self.b.scope_table, self.b.a, &self.b.work, Owner{ .scopes = self.b.scopes.items }, "scope_slots");
                 }
-                _ = try self.append(&self.b.scopes, .{ .parent = parent, .name = name, .first_occurrence = @fromBackingInt(occurrence), .hash = hash });
+                _ = try self.append("scopes", &self.b.scopes, .{ .parent = parent, .name = name, .first_occurrence = @fromBackingInt(occurrence), .hash = hash });
                 if (parent != null and name != null) try self.b.scope_table.insert(hash, id, &self.b.work);
-                try self.reserve(@import("lowering_types.zig").ScopeCursor, &self.b.cursors, id + 1, self.b.limits.max_scopes);
+                try self.reserve("cursors", @import("lowering_types.zig").ScopeCursor, &self.b.cursors, id + 1, self.b.limits.max_scopes);
                 self.b.cursors[id] = .{};
                 if (rep.attributes and self.b.attribute_data.scopes.len != 0) {
-                    try self.reserve(attrs.Scope, &self.b.attribute_data.scopes, id + 1, self.b.limits.max_scopes);
+                    try self.reserve("attribute_scopes", attrs.Scope, &self.b.attribute_data.scopes, id + 1, self.b.limits.max_scopes);
                     self.b.attribute_data.scopes[id] = .{};
                 }
                 break :blk id;
             };
-            try self.reserve(t.Occurrence, &self.b.occurrences, occurrence + 1, self.b.limits.max_scopes);
-            try self.reserve(t.Body, &self.b.bodies, occurrence + 1, self.b.limits.max_scopes);
+            try self.reserve("occurrences", t.Occurrence, &self.b.occurrences, occurrence + 1, self.b.limits.max_scopes);
+            try self.reserve("bodies", t.Body, &self.b.bodies, occurrence + 1, self.b.limits.max_scopes);
             self.b.occurrences[occurrence] = .{ .scope = @fromBackingInt(id), .parent = if (parent_occurrence) |p| @fromBackingInt(p) else null, .source = source, .membership = @fromBackingInt(occurrence) };
             self.b.bodies[occurrence] = .{ .start = 0, .end = 0, .first = 0 };
             self.occurrence_count += 1;
@@ -416,14 +436,14 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             const parent = if (self.b.scopes.items[scope].parent) |p| @backingInt(p) else 0;
             if (rep.attributes) try self.b.attribute_data.enter(self.b.a, scope, parent, @backingInt(self.b.scopes.items[scope].first_occurrence) == occurrence, self.b.limits.max_attribute_states, &self.b.work);
             self.b.bodies[occurrence].start = self.b.mention_count;
-            _ = try self.append(&self.replay, .{ .scope = .{ .scope = occurrence, .statement = self.stage_scopes.items[local].first } });
+            _ = try self.append("replay", &self.replay, .{ .scope = .{ .scope = occurrence, .statement = self.stage_scopes.items[local].first } });
         }
         fn takeNode(self: *Self, view: syntax.NodeReferenceView, occurrence: u32, retain_port: bool) r.Error!t.Endpoint {
             if (self.b.mention_count >= self.b.limits.max_mentions) return error.MentionLimit;
             try self.mention_pages.ensure(self.b.a, &self.b.work, &self.b.mentions, self.b.mention_count, @min(self.b.limits.max_mentions, self.mention_bound));
             self.header.mention_base = self.mention_pages.base;
             if (view.port != null) {
-                if (retain_port) try self.reserve(syntax.PortSyntax, &self.b.endpoint_ports, self.b.port_count + 1, self.b.limits.max_mentions);
+                if (retain_port) try self.reserve("endpoint_ports", syntax.PortSyntax, &self.b.endpoint_ports, self.b.port_count + 1, self.b.limits.max_mentions);
             }
             return self.b.node(view, occurrence, retain_port);
         }
@@ -431,10 +451,10 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             switch (value) {
                 .node => |node| {
                     const result = try self.takeNode(node, occurrence, true);
-                    _ = try self.append(&self.b.pending, .{ .node = result });
+                    _ = try self.append("pending", &self.b.pending, .{ .node = result });
                 },
                 .scope => |id| {
-                    _ = try self.append(&self.b.pending, .{ .scope = self.b.occurrences[id].scope });
+                    _ = try self.append("pending", &self.b.pending, .{ .scope = self.b.occurrences[id].scope });
                     try self.enter(id);
                 },
             }
@@ -445,15 +465,15 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             if (group.len > self.b.limits.max_attributes - start) return error.AttributeLimit;
             const end = start + @as(u32, @intCast(group.len));
             if (end >= @import("ports.zig").right) return error.IndexLimit;
-            try self.reserve(syntax.Attribute, &self.b.attributes, end, @min(self.b.limits.max_attributes, self.attribute_bound));
-            try self.reserve(attrs.Meta, &self.b.attribute_data.meta, end, @min(self.b.limits.max_attributes, self.attribute_bound));
+            try self.reserve("attributes", syntax.Attribute, &self.b.attributes, end, @min(self.b.limits.max_attributes, self.attribute_bound));
+            try self.reserve("meta", attrs.Meta, &self.b.attribute_data.meta, end, @min(self.b.limits.max_attributes, self.attribute_bound));
             if (self.b.attribute_data.scopes.len == 0) {
-                try self.reserve(attrs.Scope, &self.b.attribute_data.scopes, self.b.scopes.items.len, self.b.limits.max_scopes);
+                try self.reserve("attribute_scopes", attrs.Scope, &self.b.attribute_data.scopes, self.b.scopes.items.len, self.b.limits.max_scopes);
                 for (self.b.attribute_data.scopes) |*scope| {
                     try self.spend(1);
                     scope.* = .{};
                 }
-                try self.reserve(u32, &self.b.attribute_data.connection_defaults, self.b.connection_count, self.b.limits.max_connections);
+                try self.reserve("connection_defaults", u32, &self.b.attribute_data.connection_defaults, self.b.connection_count, self.b.limits.max_connections);
                 for (self.b.attribute_data.connection_defaults) |*value| {
                     try self.spend(1);
                     value.* = attrs.none;
@@ -472,7 +492,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             try self.connection_pages.ensure(self.b.a, &self.b.work, &self.b.connections, self.b.connection_count, @min(self.b.limits.max_connections, self.connection_bound));
             self.header.connection_base = self.connection_pages.base;
             const with_attributes = rep.attributes and self.b.attribute_data.scopes.len != 0;
-            if (with_attributes) try self.reserve(u32, &self.b.attribute_data.connection_defaults, self.b.connection_count + 1, self.b.limits.max_connections);
+            if (with_attributes) try self.reserve("connection_defaults", u32, &self.b.attribute_data.connection_defaults, self.b.connection_count + 1, self.b.limits.max_connections);
             // Validation errors reject the input through checking, not an IR
             // semantic error. Strict incompatibility is tested after validation.
             const strict = self.header.strict;
@@ -493,7 +513,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                     return @call(leaf_call, leaf, .{ self, &self.statements.items[root] });
                 },
             };
-            _ = try self.append(&self.replay, .{ .statement = root });
+            _ = try self.append("replay", &self.replay, .{ .statement = root });
             while (self.replay.items.len != 0) {
                 try self.spend(1);
                 const top = self.replay.items.len - 1;
@@ -505,7 +525,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                             _ = self.replay.pop();
                         } else {
                             self.replay.items[top].scope.statement = self.statements.items[frame.statement].next;
-                            _ = try self.append(&self.replay, .{ .statement = frame.statement });
+                            _ = try self.append("replay", &self.replay, .{ .statement = frame.statement });
                         }
                     },
                     .statement => |id| {
@@ -532,7 +552,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                         switch (s.value) {
                             .scope => |scope| try self.enter(scope),
                             .scoped_edge => {
-                                _ = try self.append(&self.replay, .{ .edge = .{ .statement = id, .link = s.first_link, .pending = try r.index(self.b.pending.items.len) } });
+                                _ = try self.append("replay", &self.replay, .{ .edge = .{ .statement = id, .link = s.first_link, .pending = try r.index(self.b.pending.items.len) } });
                             },
                             else => try @call(leaf_call, leaf, .{ self, s }),
                         }
@@ -672,24 +692,26 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
         pub fn finish(self: *Self) r.Error!lower.Output(rep, partial) {
             if (self.semantic_failure) |err| return err;
             const b = &self.b;
-            if (partial) self.aborted.deinit(b.a);
-            // No transaction or validation scratch is needed after acceptance.
-            // Release it before compaction/postings introduce their own peaks.
-            inline for (.{ "statements", "stage_scopes", "stage_attributes", "stage_links", "stage_ports", "replay" }) |field| {
-                @field(self, field).deinit(b.a);
-                @field(self, field) = .empty;
+            if (!fixed_storage) {
+                if (partial) self.aborted.deinit(b.a);
+                // No transaction or validation scratch is needed after acceptance.
+                // Release it before compaction/postings introduce their own peaks.
+                inline for (.{ "statements", "stage_scopes", "stage_attributes", "stage_links", "stage_ports", "replay" }) |field| {
+                    @field(self, field).deinit(b.a);
+                    @field(self, field) = .empty;
+                }
+                b.pending.deinit(b.a);
+                b.pending = .empty;
+                self.checker.entries.deinit(b.a);
+                self.checker.entries = .empty;
+                inline for (.{ "nodes", "scopes", "declarations" }) |field| if (@FieldType(@TypeOf(b.*), field) != void) {
+                    const list = &@field(b, field);
+                    try self.spend(list.items.len);
+                    const items = try list.toOwnedSlice(b.a);
+                    list.items = items;
+                    list.capacity = items.len;
+                };
             }
-            b.pending.deinit(b.a);
-            b.pending = .empty;
-            self.checker.entries.deinit(b.a);
-            self.checker.entries = .empty;
-            inline for (.{ "nodes", "scopes", "declarations" }) |field| if (@FieldType(@TypeOf(b.*), field) != void) {
-                const list = &@field(b, field);
-                try self.spend(list.items.len);
-                const items = try list.toOwnedSlice(b.a);
-                list.items = items;
-                list.capacity = items.len;
-            };
             try self.mention_pages.finish(b.a, &b.work, &b.mentions, b.mention_count);
             try self.connection_pages.finish(b.a, &b.work, &b.connections, b.connection_count);
             if (self.header.strict) {
@@ -736,8 +758,8 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                     c.next = base;
                     base += count;
                 }
-                var grouped = try b.a.alloc(t.Body, self.occurrence_count);
-                errdefer b.a.free(grouped);
+                var grouped = try @import("lowering_storage.zig").allocate(t.Body, b.a, self.occurrence_count, "grouped", false);
+                errdefer if (!fixed_storage) b.a.free(grouped);
                 for (b.occurrences) |*o| {
                     try self.spend(1);
                     const c = &b.cursors[@backingInt(o.scope)];
@@ -746,8 +768,15 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                     o.membership = @fromBackingInt(c.next);
                     c.next += 1;
                 }
-                b.a.free(b.bodies);
-                b.bodies = grouped;
+                if (fixed_storage) {
+                    for (grouped, b.bodies) |body, *dest| {
+                        try self.spend(1);
+                        dest.* = body;
+                    }
+                } else {
+                    b.a.free(b.bodies);
+                    b.bodies = grouped;
+                }
                 grouped = &.{};
                 for (b.connections) |*c| {
                     try self.spend(1);
@@ -757,8 +786,8 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
                     }
                 }
             }
-            b.offsets = try b.a.alloc(u32, b.nodes.items.len + 1);
-            b.positions = try b.a.alloc(u32, b.mention_count);
+            b.offsets = try @import("lowering_storage.zig").allocate(u32, b.a, b.nodes.items.len + 1, "offsets", false);
+            b.positions = try @import("lowering_storage.zig").allocate(u32, b.a, b.mention_count, "positions", false);
             for (b.offsets) |*offset| {
                 try self.spend(1);
                 offset.* = 0;
@@ -792,7 +821,7 @@ pub fn Builder(comptime actual: enc.Actual, comptime rep: @import("representatio
             }
             // Published graphs use the existing single-allocation topology
             // layout. Keep separate growable pools private to construction.
-            if (b.port_count != 0) {
+            if (!fixed_storage and b.port_count != 0) {
                 const joined = try @import("topology_storage.zig").allocate(t.ConnectionFor(rep.attributes), b.a, b.connection_count, b.port_count, false);
                 errdefer @import("topology_storage.zig").release(b.a, joined);
                 for (b.connections, joined.connections) |source, *dest| {

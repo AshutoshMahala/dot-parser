@@ -69,7 +69,7 @@ pub fn Checker(comptime actual: enc.Actual, comptime fixed: ?policy.ValidationSe
                 .generic => try self.restriction(self.settings().restrictions.graph_kinds.generic, span, .generic),
             }
         }
-        pub fn attributes(self: *Self, a: std.mem.Allocator, group: []const syntax.Attribute, work: *r.Work) (r.Error || Stop)!void {
+        pub fn attributes(self: *Self, a: anytype, group: []const syntax.Attribute, work: *r.Work) (r.Error || Stop)!void {
             if (self.settings().graphviz.unknown_attribute != .off) for (group) |attr| {
                 try work.spend(attr.key.len);
                 const d = checks.catalogFinding(actual, self.source, attr.key, self.settings().graphviz.unknown_attribute);
@@ -78,7 +78,11 @@ pub fn Checker(comptime actual: enc.Actual, comptime fixed: ?policy.ValidationSe
             };
             if (self.settings().repeated_attribute == .off or group.len < 2) return;
             try work.spend(self.entries.items.len);
-            try self.entries.resize(a, group.len);
+            if (@TypeOf(a) == std.mem.Allocator) try self.entries.resize(a, group.len) else {
+                try a.ensure("validation_keys", group.len);
+                self.entries.items.len = group.len;
+                a.observe("validation_keys", group.len);
+            }
             const values = @import("../dot/identifier_value.zig").ForEncoding(actual);
             for (group, self.entries.items, 0..) |attr, *entry, i| {
                 try work.spend(attr.key.len);

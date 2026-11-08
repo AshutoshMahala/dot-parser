@@ -65,6 +65,22 @@ fn Observed(comptime IR: type, comptime config: ir.Config, comptime Dot: type, c
                 }
             };
         }
+        const Fixed = @import("event_fixed.zig").Bound(Self, IR, config, Dot, Observer);
+        pub const FixedOptions = Fixed.Options;
+        pub const FixedResult = Fixed.Result;
+        pub const FixedPartialResult = Fixed.PartialResult;
+        pub const ParseScratchCapacities = Fixed.ParseScratchCapacities;
+        pub const ParseBounds = Fixed.ParseBounds;
+        pub const ParseScratch = Fixed.ParseScratch;
+        pub const ParseMemory = Fixed.ParseMemory;
+        pub const ParseLayout = Fixed.ParseLayout;
+        pub const FixedParseScratch = Fixed.FixedParseScratch;
+        pub const parseLayout = Fixed.parseLayout;
+        pub const parseBounds = Fixed.parseBounds;
+        pub const parseIn = Fixed.parseIn;
+        pub const parsePartialIn = Fixed.parsePartialIn;
+        pub const FixedSession = Fixed.Session;
+        pub const FixedPartialSession = Fixed.PartialSession;
         pub const Phase = @import("event_session.zig").Phase;
         pub const Session = @import("event_session.zig").Session(Self, config, Dot, Observer, false);
         pub const PartialSession = @import("event_session.zig").Session(Self, config, Dot, Observer, true);
@@ -105,14 +121,22 @@ fn Observed(comptime IR: type, comptime config: ir.Config, comptime Dot: type, c
         }
         fn run(comptime actual: enc.Actual, comptime partial: bool, allocator: std.mem.Allocator, source: []const u8, info: enc.Info, settings: @import("../dot/policy.zig").ValidationSettings, options: Options, limits: r.Limits, hook: ?r.Cancellation) Error!ResultFor(if (partial) IR.PartialGraph else IR.Graph) {
             var memory: r.Memory = .{ .backing = allocator, .limit = limits.max_bytes };
-            var builder = try builders.Builder(actual, rep, fixed, partial).init(memory.allocator(), source, info, limits, hook, settings, options.diagnostics);
+            return runBody(actual, partial, &memory, source, info, settings, options, limits, hook, null, {});
+        }
+        pub fn runFixed(comptime actual: enc.Actual, comptime partial: bool, memory: *Fixed.Context, source: []const u8, info: enc.Info, settings: @import("../dot/policy.zig").Effective, options: Options, hook: ?r.Cancellation, summary: *?Checking) Error!ResultFor(if (partial) IR.PartialGraph else IR.Graph) {
+            return runBody(actual, partial, memory, source, info, settings.validation, options, options.lowering.limits orelse config.limits, hook, summary, settings);
+        }
+        inline fn runBody(comptime actual: enc.Actual, comptime partial: bool, memory: anytype, source: []const u8, info: enc.Info, settings: @import("../dot/policy.zig").ValidationSettings, options: Options, limits: r.Limits, hook: ?r.Cancellation, summary: ?*?Checking, prepared: if (@TypeOf(memory) == *r.Memory) void else @import("../dot/policy.zig").Effective) Error!ResultFor(if (partial) IR.PartialGraph else IR.Graph) {
+            const fixed_storage = @TypeOf(memory) != *r.Memory;
+            const Context = if (fixed_storage) Fixed.Context else void;
+            var builder = try builders.BuilderWith(actual, rep, fixed, partial, Context).init(if (fixed_storage) memory else memory.allocator(), source, info, limits, hook, settings, options.diagnostics);
             defer builder.deinit();
             const Consumer = forwarding.Consumer(@TypeOf(builder), Observer);
             var consumer: if (Observer != null) Consumer else void = if (Observer != null)
                 .{ .builder = &builder, .observer = options.observer }
             else {};
             const Driver = Dot.Events(Consumer);
-            const call = Driver.parse(allocator, source, if (Observer != null) &consumer else &builder, options.diagnostics, options.dot);
+            const call = if (fixed_storage) @import("event_fixed.zig").drive(actual, Dot, source, if (Observer != null) &consumer else &builder, memory, prepared, options.dot, options.diagnostics, info) else Driver.parse(memory.backing, source, if (Observer != null) &consumer else &builder, options.diagnostics, options.dot);
             const parsed = if (@typeInfo(@TypeOf(call)) == .error_union) try call else call;
             // Capture observer failures at their producer. An observer may use
             // names such as OutOfMemory or ValidationStopped for its own errors.
@@ -122,7 +146,7 @@ fn Observed(comptime IR: type, comptime config: ir.Config, comptime Dot: type, c
             }
             if (builder.failure) |failure| switch (failure) {
                 error.ValidationStopped => {},
-                else => |err| return memory.failure(err),
+                else => |err| return if (fixed_storage) err else memory.failure(err),
             };
             var result: ResultFor(if (partial) IR.PartialGraph else IR.Graph) = .{ .checking = .{
                 .outcome = switch (parsed.outcome) {
@@ -144,6 +168,10 @@ fn Observed(comptime IR: type, comptime config: ir.Config, comptime Dot: type, c
                 .warnings = parsed.warnings,
                 .coverage = parsed.coverage,
             } };
+            defer if (summary) |out| {
+                out.* = result.checking;
+            };
+            if (fixed_storage and parsed.outcome == .storage_failure) return memory.fail(.nesting_frames, memory.memory.scratch.capacities.nesting, @as(usize, memory.memory.scratch.capacities.nesting) + 1);
             if (builder.failure != null) {
                 result.checking.validation = builder.checker.result();
                 result.checking.diagnostic_delivery = builder.checker.delivery;
@@ -167,11 +195,11 @@ fn Observed(comptime IR: type, comptime config: ir.Config, comptime Dot: type, c
                     result.checking.diagnostic_stop = builder.checker.stop;
                     return result;
                 },
-                else => |failure| return memory.failure(failure),
+                else => |failure| return if (fixed_storage) failure else memory.failure(failure),
             };
             builder.finishChecks() catch |failure| switch (failure) {
                 error.ValidationStopped => {},
-                else => |err| return memory.failure(err),
+                else => |err| return if (fixed_storage) err else memory.failure(err),
             };
             result.checking.validation = builder.validation(parsed.outcome == .success, parsed.coverage.retained_end);
             result.checking.warnings += builder.checker.warnings;
@@ -183,7 +211,7 @@ fn Observed(comptime IR: type, comptime config: ir.Config, comptime Dot: type, c
             } else if (!result.checking.validation.?.documentValid()) return result;
             result._graph = builder.finish() catch |err| {
                 if (partial and err == error.UnsupportedSemantics) return result;
-                return memory.failure(err);
+                return if (fixed_storage) err else memory.failure(err);
             };
             return result;
         }

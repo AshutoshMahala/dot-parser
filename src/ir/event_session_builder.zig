@@ -12,7 +12,7 @@ const attrs = @import("attributes.zig");
 const names = @import("names.zig");
 const p = @import("lowering_primitives.zig");
 const storage = @import("session_storage.zig");
-const Slice = @import("event_session_storage.zig").Slice;
+const Slice = @import("event_session_storage.zig").SliceFor;
 const checking = @import("event_validation_session.zig");
 const none = std.math.maxInt(u32);
 const Span = support.location.Span;
@@ -21,7 +21,12 @@ fn Item(comptime Owner: type, comptime field: []const u8) type {
 }
 
 pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fixed: ?policy.ValidationSettings, comptime partial: bool) type {
-    const D = direct.Builder(.utf8, rep, fixed, partial);
+    return BuilderWith(rep, fixed, partial, void);
+}
+pub fn BuilderWith(comptime rep: @import("representation.zig").Identity, comptime fixed: ?policy.ValidationSettings, comptime partial: bool, comptime Context: type) type {
+    const fixed_storage = Context != void;
+    const Memory = if (fixed_storage) *Context else std.mem.Allocator;
+    const D = direct.BuilderWith(.utf8, rep, fixed, partial, Context);
     const B = @FieldType(D, "b");
     const Statement = Item(D, "statements");
     const Pending = Item(B, "pending");
@@ -105,6 +110,9 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
             joined_ports,
             checked,
             done,
+            // Fixed-only state: preserve the existing phase values and hot
+            // dispatch layout of allocator-backed construction.
+            group_copy,
             intern_hash,
             intern_probe,
             intern_equal,
@@ -178,7 +186,7 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
         new_slots: []u32 = &.{},
         table_index: u32 = 0,
         rehash_id: u32 = 0,
-        validation: checking.Attributes = .{},
+        validation: checking.AttributesFor(fixed_storage) = .{},
         encoding: checking.Encoding = undefined,
         facts: e.Coverage = .{},
         complete: bool = false,
@@ -192,36 +200,37 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
         grouped_base: u32 = 0,
         indexer: if (rep.indexes.any()) @import("query_indexes.zig").Builder(rep.indexes) else void = if (rep.indexes.any()) .{} else {},
         joined: ?@TypeOf(@import("topology_storage.zig").allocate(t.ConnectionFor(rep.attributes), undefined, 0, 0, true) catch unreachable) = null,
-        stage_growth: Slice(Statement) = .{},
-        stage_scope_growth: Slice(Item(D, "stage_scopes")) = .{},
-        stage_attribute_growth: Slice(syntax.Attribute) = .{},
-        stage_link_growth: Slice(Item(D, "stage_links")) = .{},
-        stage_port_growth: Slice(syntax.NodeReferenceView) = .{},
-        replay_growth: Slice(Item(D, "replay")) = .{},
-        partial_statement_growth: if (partial) Slice(Item(Partial, "statements")) else void = if (partial) .{} else {},
-        partial_scope_growth: if (partial) Slice(Item(Partial, "scopes")) else void = if (partial) .{} else {},
-        node_growth: Slice(t.NodeFor(rep.attributes)) = .{},
-        scope_growth: Slice(t.Scope) = .{},
-        key_growth: if (rep.attributes) Slice(attrs.Key) else void = if (rep.attributes) .{} else {},
-        cell_growth: if (rep.attributes) Slice(attrs.Cell) else void = if (rep.attributes) .{} else {},
-        declaration_growth: if (rep.attributes) Slice(t.Declaration) else void = if (rep.attributes) .{} else {},
-        occurrence_growth: Slice(t.Occurrence) = .{},
-        body_growth: Slice(t.Body) = .{},
-        cursor_growth: Slice(std.meta.Elem(@FieldType(B, "cursors"))) = .{},
-        mention_growth: Slice(t.Mention) = .{},
-        connection_growth: Slice(t.ConnectionFor(rep.attributes)) = .{},
-        port_growth: Slice(syntax.PortSyntax) = .{},
-        attribute_growth: if (rep.attributes) Slice(syntax.Attribute) else void = if (rep.attributes) .{} else {},
-        meta_growth: if (rep.attributes) Slice(attrs.Meta) else void = if (rep.attributes) .{} else {},
-        attribute_scope_growth: if (rep.attributes) Slice(attrs.Scope) else void = if (rep.attributes) .{} else {},
-        defaults_growth: if (rep.attributes) Slice(u32) else void = if (rep.attributes) .{} else {},
-        pending_growth: Slice(Pending) = .{},
-        gap_growth: if (partial) Slice(@import("coverage.zig").EntryFor(rep.attributes)) else void = if (partial) .{} else {},
+        stage_growth: Slice(Statement, fixed_storage, "statements") = .{},
+        stage_scope_growth: Slice(Item(D, "stage_scopes"), fixed_storage, "stage_scopes") = .{},
+        stage_attribute_growth: Slice(syntax.Attribute, fixed_storage, "stage_attributes") = .{},
+        stage_link_growth: Slice(Item(D, "stage_links"), fixed_storage, "stage_links") = .{},
+        stage_port_growth: Slice(syntax.NodeReferenceView, fixed_storage, "stage_ports") = .{},
+        replay_growth: Slice(Item(D, "replay"), fixed_storage, "replay") = .{},
+        partial_statement_growth: if (partial) Slice(Item(Partial, "statements"), fixed_storage, "partial_statements") else void = if (partial) .{} else {},
+        partial_scope_growth: if (partial) Slice(Item(Partial, "scopes"), fixed_storage, "partial_scopes") else void = if (partial) .{} else {},
+        node_growth: Slice(t.NodeFor(rep.attributes), fixed_storage, "nodes") = .{},
+        scope_growth: Slice(t.Scope, fixed_storage, "scopes") = .{},
+        key_growth: if (rep.attributes) Slice(attrs.Key, fixed_storage, "keys") else void = if (rep.attributes) .{} else {},
+        cell_growth: if (rep.attributes) Slice(attrs.Cell, fixed_storage, "cells") else void = if (rep.attributes) .{} else {},
+        declaration_growth: if (rep.attributes) Slice(t.Declaration, fixed_storage, "declarations") else void = if (rep.attributes) .{} else {},
+        occurrence_growth: Slice(t.Occurrence, fixed_storage, "occurrences") = .{},
+        body_growth: Slice(t.Body, fixed_storage, "bodies") = .{},
+        cursor_growth: Slice(std.meta.Elem(@FieldType(B, "cursors")), fixed_storage, "cursors") = .{},
+        mention_growth: Slice(t.Mention, fixed_storage, "mentions") = .{},
+        connection_growth: Slice(t.ConnectionFor(rep.attributes), fixed_storage, "connections") = .{},
+        port_growth: Slice(syntax.PortSyntax, fixed_storage, "endpoint_ports") = .{},
+        attribute_growth: if (rep.attributes) Slice(syntax.Attribute, fixed_storage, "attributes") else void = if (rep.attributes) .{} else {},
+        meta_growth: if (rep.attributes) Slice(attrs.Meta, fixed_storage, "meta") else void = if (rep.attributes) .{} else {},
+        attribute_scope_growth: if (rep.attributes) Slice(attrs.Scope, fixed_storage, "attribute_scopes") else void = if (rep.attributes) .{} else {},
+        defaults_growth: if (rep.attributes) Slice(u32, fixed_storage, "connection_defaults") else void = if (rep.attributes) .{} else {},
+        pending_growth: Slice(Pending, fixed_storage, "pending") = .{},
+        gap_growth: if (partial) Slice(@import("coverage.zig").EntryFor(rep.attributes), fixed_storage, "gaps") else void = if (partial) .{} else {},
 
-        pub fn init(a: std.mem.Allocator, source: []const u8, info: support.encoding.Info, limits: r.Limits, settings: policy.ValidationSettings, sink: @import("../dot/diagnostic.zig").Sink) r.Error!Self {
+        pub fn init(a: Memory, source: []const u8, info: support.encoding.Info, limits: r.Limits, settings: policy.ValidationSettings, sink: @import("../dot/diagnostic.zig").Sink) r.Error!Self {
             return .{ .d = try D.init(a, source, info, limits, null, settings, sink) };
         }
         pub fn deinit(self: *Self) void {
+            if (fixed_storage) return;
             const a = self.d.b.a;
             self.validation.deinit(a);
             inline for (@typeInfo(Self).@"struct".field_names) |field| {
@@ -232,7 +241,7 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
             if (self.joined) |joined| @import("topology_storage.zig").release(a, joined);
             self.d.deinit();
         }
-        pub fn bind(self: *Self, a: std.mem.Allocator) void {
+        pub fn bind(self: *Self, a: Memory) void {
             self.d.b.a = a;
             self.d.b.doc = &self.d.header;
         }
@@ -258,7 +267,7 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
             var used: u32 = 0;
             while (used < allowance and self.phase == .intern_hash) {
                 used += 1;
-                @import("lowering_intern.zig").step(rep, false, Phase.intern_hash, self) catch |err| return .{ .used = used, .failure = err };
+                @import("lowering_intern.zig").step(rep, fixed_storage, Phase.intern_hash, self) catch |err| return .{ .used = used, .failure = err };
             }
             return .{ .used = used };
         }
@@ -266,7 +275,7 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
             return switch (self.phase) {
                 .receive, .begin_statement, .begin_scope, .scope_done, .scope_arrays, .scope_install => .stage,
                 .commit, .validate_attributes, .validate_assignment, .validate_reference, .validate_links, .commit_done, .prefix, .prefix_link, .finish_kind, .finish_encoding => .validate,
-                .partial_start, .partial_scopes, .partial_flush, .partial_end, .gap_suffix, .finish_start, .release_stage, .compact, .strict_connections, .group_clear, .group_count, .group_prefix, .group_assign, .group_rewrite, .posting_allocate, .posting_clear, .posting_count, .posting_prefix, .posting_fill, .posting_restore, .indexes, .joined_allocate, .joined_connections, .joined_ports, .done => .finalize,
+                .partial_start, .partial_scopes, .partial_flush, .partial_end, .gap_suffix, .finish_start, .release_stage, .compact, .strict_connections, .group_clear, .group_count, .group_prefix, .group_assign, .group_rewrite, .group_copy, .posting_allocate, .posting_clear, .posting_count, .posting_prefix, .posting_fill, .posting_restore, .indexes, .joined_allocate, .joined_connections, .joined_ports, .done => .finalize,
                 else => .replay,
             };
         }
@@ -367,14 +376,14 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
         }
         pub fn publish(self: *Self) @import("lower.zig").Output(rep, partial) {
             std.debug.assert(self.phase == .done);
-            if (self.joined) |joined| {
+            if (!fixed_storage) if (self.joined) |joined| {
                 const b = &self.d.b;
                 storage.release(t.ConnectionFor(rep.attributes), b.a, b.connections);
                 storage.release(syntax.PortSyntax, b.a, b.endpoint_ports);
                 b.connections = joined.connections;
                 b.endpoint_ports = joined.endpoint_ports;
                 self.joined = null;
-            }
+            };
             return self.d.b.publish();
         }
         pub fn step(self: *Self) Error!void {
@@ -923,7 +932,7 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
                     if (link.right == .node) try self.checkPrefixReference(link.right.node);
                     if (link.span.endOffset() <= self.prefix_end) try d.checker.operator(d.header.kind, d.keyword, link.operator, link.span);
                 },
-                inline .intern_hash, .intern_probe, .intern_equal, .intern_prepare, .table_clear, .rehash_scan, .rehash_probe, .intern_append, .intern_insert => |phase| try @import("lowering_intern.zig").step(rep, false, phase, self),
+                inline .intern_hash, .intern_probe, .intern_equal, .intern_prepare, .table_clear, .rehash_scan, .rehash_probe, .intern_append, .intern_insert => |phase| try @import("lowering_intern.zig").step(rep, fixed_storage, phase, self),
                 .partial_start => if (partial) {
                     self.unfinished = if (self.facts.root_closed) null else .root;
                     self.index = 0;
@@ -990,6 +999,11 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
                     self.phase = .release_stage;
                 },
                 .release_stage => {
+                    if (fixed_storage) {
+                        self.compact_index = 0;
+                        self.phase = .compact;
+                        return;
+                    }
                     const fields = .{ "statements", "stage_scopes", "stage_attributes", "stage_links", "stage_ports", "replay" };
                     inline for (fields, 0..) |field, i| if (self.index == i) {
                         const list = &@field(d, field);
@@ -1093,7 +1107,7 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
                         self.grouped_base += count;
                         return;
                     }
-                    self.grouped = try storage.allocate(t.Body, a, d.occurrence_count);
+                    self.grouped = try @import("lowering_storage.zig").allocate(t.Body, a, d.occurrence_count, "grouped", true);
                     self.index = 0;
                     self.phase = .group_assign;
                 },
@@ -1108,9 +1122,23 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
                         cursor.next += 1;
                         return;
                     }
+                    if (fixed_storage) {
+                        self.index = 0;
+                        self.phase = .group_copy;
+                        return;
+                    }
                     storage.release(t.Body, a, b.bodies);
                     b.bodies = self.grouped;
                     self.grouped = &.{};
+                    self.index = 0;
+                    self.phase = .group_rewrite;
+                },
+                .group_copy => {
+                    if (self.index < b.bodies.len) {
+                        b.bodies[self.index] = self.grouped[self.index];
+                        self.index += 1;
+                        return;
+                    }
                     self.index = 0;
                     self.phase = .group_rewrite;
                 },
@@ -1127,8 +1155,8 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
                     }
                 },
                 .posting_allocate => {
-                    if (b.offsets.len == 0) b.offsets = try storage.allocate(u32, a, b.nodes.items.len + 1) else {
-                        b.positions = try storage.allocate(u32, a, b.mention_count);
+                    if (b.offsets.len == 0) b.offsets = try @import("lowering_storage.zig").allocate(u32, a, b.nodes.items.len + 1, "offsets", true) else {
+                        b.positions = try @import("lowering_storage.zig").allocate(u32, a, b.mention_count, "positions", true);
                         self.index = 0;
                         self.phase = .posting_clear;
                     }
@@ -1184,6 +1212,10 @@ pub fn Builder(comptime rep: @import("representation.zig").Identity, comptime fi
                     if (try self.indexer.step(b, true)) self.phase = .joined_allocate;
                 } else unreachable,
                 .joined_allocate => {
+                    if (fixed_storage) {
+                        self.phase = .done;
+                        return;
+                    }
                     if (b.port_count == 0) {
                         self.phase = .done;
                         return;

@@ -56,7 +56,7 @@ pub fn Builder(comptime actual: encoding.Actual, comptime rep: @import("represen
     return BuilderWith(actual, rep, partial, false);
 }
 pub fn BuilderWith(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime fixed_storage: bool) type {
-    return BuilderMode(actual, rep, partial, fixed_storage, false);
+    return BuilderMode(actual, rep, partial, fixed_storage, false, pools.For(rep).Context);
 }
 
 /// Header and construction cursors for event input; no syntax pools or Document.
@@ -73,9 +73,12 @@ pub const Header = struct {
     connection_base: u32 = 0,
 };
 pub fn EventBuilder(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity, comptime partial: bool) type {
-    return BuilderMode(actual, rep, partial, false, true);
+    return BuilderMode(actual, rep, partial, false, true, void);
 }
-fn BuilderMode(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime fixed_storage: bool, comptime streamed: bool) type {
+pub fn EventBuilderIn(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime Context: type) type {
+    return BuilderMode(actual, rep, partial, true, true, Context);
+}
+fn BuilderMode(comptime actual: encoding.Actual, comptime rep: @import("representation.zig").Identity, comptime partial: bool, comptime fixed_storage: bool, comptime streamed: bool, comptime Context: type) type {
     const Node = t.NodeFor(rep.attributes);
     const Connection = t.ConnectionFor(rep.attributes);
     return struct {
@@ -85,7 +88,7 @@ fn BuilderMode(comptime actual: encoding.Actual, comptime rep: @import("represen
         const Frame = Records.Frame;
         const EdgeFrame = Records.EdgeFrame;
         const Pending = Records.Pending;
-        a: if (fixed_storage) *pools.For(rep).Context else std.mem.Allocator,
+        a: if (fixed_storage) *Context else std.mem.Allocator,
         doc: *const (if (streamed) Header else syntax.Document),
         interpretation: InterpretationFor(partial),
         limits: r.Limits,
@@ -132,7 +135,7 @@ fn BuilderMode(comptime actual: encoding.Actual, comptime rep: @import("represen
             return &self.publication.indexes;
         }
 
-        pub fn bindFixed(self: *Self, context: *pools.For(rep).Context) void {
+        pub fn bindFixed(self: *Self, context: *Context) void {
             if (!fixed_storage) @compileError("fixed storage only");
             inline for (.{ "nodes", "scopes", "stack", "edge_stack", "pending" }) |field| @field(self, field) = context.list(field);
             if (rep.attributes) {
