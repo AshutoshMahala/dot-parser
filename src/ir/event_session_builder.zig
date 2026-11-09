@@ -406,7 +406,9 @@ pub fn BuilderWith(comptime rep: @import("representation.zig").Identity, comptim
                             self.beginScope(null, d.header.name, .{ .start = 0, .len = try r.index(d.header.source.len) });
                         },
                         .begin_statement => |value| {
-                            if (d.current == 0) {
+                            // Capacity-growth estimates have no role in fixed
+                            // storage. Keep the receive step and its credit.
+                            if (!fixed_storage and d.current == 0) {
                                 const remaining = d.header.source.len - @backingInt(value.owner.statement);
                                 d.header.node_capacity_bound = bound(b.nodes.items.len, remaining);
                                 d.mention_bound = bound(b.mention_count, remaining);

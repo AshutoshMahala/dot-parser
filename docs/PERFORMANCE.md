@@ -1650,9 +1650,9 @@ bounded stack copies and closing a scope without growing a full stack.
 
 ### Fixed-storage event construction
 
-Measured 2026-11-08 against `b8b5008` and the slice-3g working tree, Zig 0.17.0,
-Apple M4 Pro. Fixed events are opt-in; ordinary `IR.parse` still builds through
-Document. Both routes keep edge sets symbolic.
+Measured 2026-11-08 against `44de1f1` and the fixed-event optimization working
+tree, Zig 0.17.0, Apple M4 Pro. Fixed events are opt-in; ordinary `IR.parse` still
+builds through Document. Both routes keep edge sets symbolic.
 
 ```sh
 zig build bench-ir-fixed-events -Doptimize=fast -- --corpus /path/to/generated
@@ -1673,35 +1673,51 @@ replay, grouping and lookup scratch. Source bytes, inline call/session state,
 allocator overhead and caller-owned diagnostics/observers are excluded on both
 sides. No construction allocation or implicit edge expansion occurs.
 
-Across the 14 M workloads, geometric-mean changes for fixed events relative to
-fixed Document-to-IR (positive time means slower):
+The optimization removes capacity-growth estimates that fixed pools never use,
+reuses the already-bound mention/connection slices, and inlines the fixed-storage
+accessors and event handoff. Semantic checks, staging, work charges and
+cancellation polling remain in place. The Small reporter's code section shrinks
+from 280,988 to 280,064 B; it does not trade extra buffers for speed.
 
-| Build | Exact-fit time change | Exact-fit memory change |
-| --- | ---: | ---: |
-| fast | +5.8% | -26.5% |
-| safe | +9.4% | -26.5% |
-| small | +13.6% | -26.5% |
+Baseline and candidate executables were alternated per workload, with the order
+reversed on the second full pass. Each cell below uses the mean of those two
+per-pass medians, then a geometric mean across the 14 M workloads. The unchanged
+Document control varied by +1.6% / -1.5% / -2.5% in Fast / Safe / Small. To avoid
+crediting that drift to the patch, the adjusted improvement divides the event
+time ratio by the control's time ratio.
 
-The effect depends on shape. Fast, exact-fit reservations:
-
-| Input | Fixed Document ms | Fixed events ms | Document peak MiB | Event peak MiB |
+| Build | Event time versus baseline | Adjusted improvement | Event overhead versus fixed Document, before → after | Exact-fit memory versus fixed Document |
 | --- | ---: | ---: | ---: | ---: |
-| nodes | 4.619 | 5.941 | 9.77 | 7.49 |
-| edges | 10.893 | 10.016 | 15.50 | 11.30 |
-| edge chains | 44.517 | 41.528 | 87.73 | 71.32 |
-| node attributes | 19.694 | 22.902 | 28.08 | 21.22 |
-| subgraph endpoints | 6.623 | 8.531 | 14.89 | 10.83 |
-| dense ports | 15.330 | 15.508 | 28.32 | 18.78 |
-| mixed | 20.454 | 20.754 | 23.23 | 16.97 |
-| deep nesting, 50,000 levels | 2.641 | 3.689 | 10.87 | 15.76 |
-| reopened scopes | 0.195 | 0.225 | 0.29 | 0.18 |
-| giant chain, 100,000 nodes | 4.353 | 4.332 | 12.44 | 14.35 |
-| giant attribute statement | 11.429 | 11.797 | 9.39 | 9.39 |
-| 50,000 × 50,000 symbolic product | 4.521 | 5.661 | 9.77 | 15.88 |
+| fast | -6.3% | -7.8% | +9.9% → +1.4% | -26.5% |
+| safe | -4.4% | -2.9% | +4.8% → +1.7% | -26.5% |
+| small | -11.3% | -9.0% | +13.7% → +3.4% | -26.5% |
+
+Three additional alternating repetitions of the port and chain shapes did not
+reproduce their initial Fast/Safe slowdowns against the unchanged control.
+Absolute timings, especially for the larger chains, varied considerably. These
+are local measurements, not a guarantee that every input improves equally.
+
+The effect depends on shape. Small, exact-fit reservations:
+
+| Input | Events before ms | Events after ms | Fixed Document after ms | Event peak MiB |
+| --- | ---: | ---: | ---: | ---: |
+| nodes | 13.214 | 11.163 | 8.914 | 7.49 |
+| edges | 22.660 | 19.541 | 22.300 | 11.30 |
+| edge chains | 100.071 | 99.533 | 99.495 | 71.32 |
+| node attributes | 56.608 | 51.950 | 47.144 | 21.22 |
+| subgraph endpoints | 17.037 | 15.135 | 12.459 | 10.83 |
+| dense ports | 32.819 | 28.095 | 29.532 | 18.78 |
+| mixed | 45.546 | 41.528 | 40.397 | 16.97 |
+| deep nesting, 50,000 levels | 7.270 | 5.964 | 4.574 | 15.76 |
+| giant chain, 100,000 nodes | 10.286 | 8.809 | 9.441 | 14.35 |
+| 50,000 × 50,000 symbolic product | 12.688 | 10.521 | 8.479 | 15.88 |
 
 Flat statement staging is reused; giant transactions must remain staged until
 semantic replay is safe. Avoiding a Document therefore does not guarantee lower
-memory. The product above remains one symbolic connection, not 2.5 billion edges.
+memory or faster construction. All reservation sizes are unchanged by this
+optimization, including deep nesting (10.87 / 15.76 MiB for Document / events)
+and the symbolic product (9.77 / 15.88 MiB). The product remains one symbolic
+connection, not 2.5 billion edges.
 
 Sizing is an explicit choice. Across the same M files:
 
@@ -1715,9 +1731,10 @@ Sizing is an explicit choice. Across the same M files:
 anything automatically, and can cost substantially more than an application
 budget or previous same-constructor peaks. In the ordinary edges case, exact
 reservations are 15.50 / 11.30 MiB (Document / events); bounds reserve 33.66 /
-33.28 MiB. Counting is not free either: `measureIn` takes 2.994 ms there. If the
-caller needs that pass first, add it to construction: 13.887 / 13.009 ms. Callers
-with prior counts or explicit envelopes do not pay it.
+33.28 MiB. Counting is not free either: in Fast, `measureIn` takes 2.978 ms
+there. If the caller needs that pass first, add it to construction: 13.926 /
+12.534 ms for Document / events. Callers with prior counts or explicit envelopes
+do not pay it.
 
 **Partial bookkeeping.** A separate Fast probe uses identical valid input with
 complete and partial constructors, reserving the larger one-shot/session scratch
@@ -1728,42 +1745,38 @@ transaction, not the whole flat file. On a broken 2,000-edge input with 40 bad
 attribute statements, partial fixed events retain later edges and use 234,032 B
 of graph plus scratch. No storage failure publishes a partial graph.
 
-On those nine small valid shapes, fixed `Session.run()` and grants of 4,096
-cost 2.14× and 2.12× direct event time; grants of one cost 6.11× (geometric means).
-The fixed route removes allocations, not the scheduling/checkpoint work. Exact
-scratch counts can differ between one-shot and session construction; use peaks
-from the same constructor.
+**Sessions.** Two opposite-order passes over nine small valid shapes, with
+cancellation enabled at interval one in both stages, give these Small time
+changes against `44de1f1`:
 
-**Existing-route gate.** No retained-byte, live-peak, Arena-capacity or allocation
-count changes were found on the 20 comparison shapes. The final whole-route
-M-corpus check gave these time changes against the baseline:
+| Constructor | `run()` | Grant 4,096 | Grant 1 |
+| --- | ---: | ---: | ---: |
+| Complete | -1.6% | -1.9% | -7.7% |
+| Partial | -2.1% | -1.8% | -2.2% |
 
-| Build | Growable Document | Growable events | Arena Document | Arena events |
-| --- | ---: | ---: | ---: | ---: |
-| fast | -0.51% | -0.58% | -0.51% | -0.29% |
-| safe | +0.26% | +0.95% | +0.59% | +1.29% |
-| small | -5.18% | -2.97% | -4.79% | -2.66% |
+The unchanged Document control moved +1.4–1.6% in that probe. Fast session
+changes stayed within ±0.7%. Complete Small sessions still cost 2.20× / 2.19× /
+4.42× direct cancellable event construction for `run()` / 4,096 / one-credit
+grants. The fixed route removes allocations, not the scheduling/checkpoint work.
+Exact scratch counts can differ between one-shot and session construction; use
+peaks from the same constructor.
 
-Earlier opposite-order rounds placed the Document route within -2.3% to +0.3%
-and events within -2.0% to +1.0% across all 20 shapes. Small's final improvement
-also affects the unchanged Document control; it is not a claimed optimization.
-These runs show no repeatable ordinary-path regression. The comparison program's
-code section shrinks by 24 / 20 / 1,188 B in Fast / Safe / Small; fixed construction
-is not pulled into programs that do not call it.
+**Existing-route gate.** The allocator-backed comparison reporter, which calls
+ordinary `IR.parse` and allocator-backed events with both GPA and Arena storage,
+has byte-identical executable code before and after this optimization in all
+three modes. Its code section remains 426,208 B in Fast, 496,324 B in Safe and
+192,444 B in Small. The changes specialize fixed storage; programs that do not
+select it compile the same paths. The existing Small block-session inlining is
+unchanged.
 
-The first Small block-session comparison exposed a 10.7% slowdown. Preserving
-the existing phase values and inlining its semantic step recovered it. Two
-opposite-order repeat rounds put block sessions at -2.6%, scalar `run()` /
-4,096-credit sessions at +0.30% / +0.32%, and one-credit sessions at -2.0%.
-The combined Small session reporter's code section grows from 307,840 to
-320,336 B (+12.2 KiB); this cost belongs to the optional compiled block-session
-path, not ordinary one-shot parsing. Inline allocator-session state remains
-4,816 B. Scalar and runtime-selected Small steps remain outlined.
-
-Session comparisons preserve exact credit totals, polling counts, allocation
-counts and peaks. The focused tests additionally verify grant partitions,
-zero/one-credit advances, cancellation from callbacks, exact-fit pools and
-terminal shortfalls. Fixed storage does not relax metering or cancellation.
+Across complete and partial valid input plus a broken-input recovery case,
+the 76 fixed-event configurations per build preserve exact credit totals,
+polling counts and reserved graph/scratch bytes. Construction still allocates
+nothing. The focused tests additionally verify grant partitions, zero/one-credit
+advances, cancellation from callbacks, exact-fit pools and terminal shortfalls.
+The full IR suite passes 378 tests; the focused Safe and Small suites each pass
+13, and all 47 freestanding build steps pass. Fixed storage does not relax
+metering or cancellation.
 
 ### Lowering a Document
 

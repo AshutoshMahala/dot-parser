@@ -12,7 +12,10 @@ pub fn PagesFor(comptime T: type, comptime fixed: bool, comptime field: []const 
     return struct {
         base: u32 = 0,
         pub fn deinit(_: *@This(), _: anytype) void {}
-        pub fn ensure(_: *@This(), a: anytype, _: *r.Work, current: *[]T, written: u32, _: u32) r.Error!void {
+        pub inline fn ensure(_: *@This(), a: anytype, _: *r.Work, current: *[]T, written: u32, _: u32) r.Error!void {
+            // A fixed pool never moves. Bind it once, then check the retained
+            // slice before reconstructing the same view for every record.
+            if (written < current.len) return;
             try a.ensure(field, @as(usize, written) + 1);
             current.* = a.slice(field);
         }

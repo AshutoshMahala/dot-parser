@@ -162,9 +162,14 @@ pub fn BuilderWith(comptime actual: enc.Actual, comptime rep: @import("represent
             if (fixed_storage) if (self.b.a.nesting_depth) |depth| self.b.a.observe("nesting", depth.*);
         }
         pub inline fn onEvent(self: *Self, event: e.Event) Error!e.Action {
+            // Inlining through an observer adds compile-time dispatch branches.
+            // This quota affects compilation only, never runtime work credits.
+            if (fixed_storage) @setEvalBranchQuota(4000);
             self.fixedCheckpoint();
             self.b.doc = &self.header;
-            return self.consume(event) catch |err| {
+            // Let fixed construction specialize the handoff by event kind,
+            // including in Small builds; no separate copy of Event is needed.
+            return (if (fixed_storage) @call(.always_inline, consume, .{ self, event }) else self.consume(event)) catch |err| {
                 self.failure = err;
                 return err;
             };
@@ -191,7 +196,9 @@ pub fn BuilderWith(comptime actual: enc.Actual, comptime rep: @import("represent
                     self.b.bodies[0] = .{ .start = 0, .end = 0, .first = 0 };
                 },
                 .begin_statement => |d| {
-                    if (self.current == 0) {
+                    // Fixed pools never grow. These estimates only cap allocator
+                    // growth; semantic limits are checked at each write below.
+                    if (!fixed_storage and self.current == 0) {
                         // Every further mention, connection and attribute needs
                         // at least one written code unit. Include the entire
                         // active root statement: nested replay is not ordered

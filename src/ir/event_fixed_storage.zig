@@ -139,8 +139,11 @@ pub fn For(comptime rep: @import("representation.zig").Identity, comptime Observ
                 const base_memory = try info.base.bind(bound.graph.bytes, bound.scratch.bytes[0..info.base.scratch_bytes]);
                 return .{ .base = try Base.Context.initSource(base_memory, source, limits, query_allocator), .layout = info, .memory = bound, .query_allocator = query_allocator, .peak = .{ .partial_bookkeeping = memory.scratch.capacities.partial_bookkeeping } };
             }
-            pub fn slice(self: *const Context, comptime field: []const u8) (if (@hasField(Pools, field)) @FieldType(Pools, field) else @TypeOf(@as(*const Base.Context, undefined).slice(field))) {
-                if (!@hasField(Pools, field)) return self.base.slice(field);
+            // Keep the event/base storage bridge inline: these small accessors
+            // run per record, and Small otherwise outlines both layers. The
+            // descriptor is validated by init; capacity checks remain below.
+            pub inline fn slice(self: *const Context, comptime field: []const u8) (if (@hasField(Pools, field)) @FieldType(Pools, field) else @TypeOf(@as(*const Base.Context, undefined).slice(field))) {
+                if (!@hasField(Pools, field)) return @call(.always_inline, Base.Context.slice, .{ &self.base, field });
                 const T = std.meta.Elem(@FieldType(Pools, field));
                 const n = count(field, self.memory.graph.capacities, self.memory.scratch.capacities);
                 if (n == 0) return &.{};
@@ -168,9 +171,9 @@ pub fn For(comptime rep: @import("representation.zig").Identity, comptime Observ
                 if (comptime std.mem.eql(u8, field, "replay")) return "replay_frames";
                 return field;
             }
-            pub fn ensure(self: *Context, comptime field: []const u8, needed: usize) r.Error!void {
-                if (!@hasField(Pools, field)) return self.base.ensure(field, needed);
-                const n = self.slice(field).len;
+            pub inline fn ensure(self: *Context, comptime field: []const u8, needed: usize) r.Error!void {
+                if (!@hasField(Pools, field)) return @call(.always_inline, Base.Context.ensure, .{ &self.base, field, needed });
+                const n = count(field, self.memory.graph.capacities, self.memory.scratch.capacities);
                 if (needed > n) {
                     const resource = if (comptime std.mem.eql(u8, field, "grouped")) .occurrence_pool else @field(fixed.Resource, capacityField(field));
                     return self.fail(resource, n, needed);
@@ -181,14 +184,14 @@ pub fn For(comptime rep: @import("representation.zig").Identity, comptime Observ
                 if (self.shortfall() == null) self.own_shortfall = .{ .resource = resource, .limit = @intCast(capacity), .required_at_least = n };
                 return error.PoolExhausted;
             }
-            pub fn ensureTable(self: *Context, comptime field: []const u8, needed: usize) r.Error!void {
-                return self.base.ensureTable(field, needed);
+            pub inline fn ensureTable(self: *Context, comptime field: []const u8, needed: usize) r.Error!void {
+                return @call(.always_inline, Base.Context.ensureTable, .{ &self.base, field, needed });
             }
-            pub fn observe(self: *Context, comptime field: []const u8, used: usize) void {
+            pub inline fn observe(self: *Context, comptime field: []const u8, used: usize) void {
                 const key = comptime capacityField(field);
                 if (@hasField(Capacities, key)) {
                     @field(self.peak, key) = @max(@field(self.peak, key), @as(u32, @intCast(used)));
-                } else self.base.observe(field, used);
+                } else @call(.always_inline, Base.Context.observe, .{ &self.base, field, used });
             }
             pub fn shortfall(self: *const Context) ?fixed.StorageShortfall {
                 return self.own_shortfall orelse self.base.shortfall;
